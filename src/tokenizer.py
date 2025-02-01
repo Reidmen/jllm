@@ -6,7 +6,6 @@ from logging import getLogger
 from pathlib import Path
 from typing import (
     AbstractSet,
-    cast,
     Collection,
     Dict,
     Iterator,
@@ -15,11 +14,11 @@ from typing import (
     Sequence,
     TypedDict,
     Union,
+    cast,
 )
 
 import tiktoken
 from tiktoken.load import load_tiktoken_bpe
-
 
 logger = getLogger(__name__)
 

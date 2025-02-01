@@ -1,13 +1,15 @@
-import jax
-import jax.numpy as jnp
-import jax.lax as lax
-import flax.linen as nn
-from flax.core.frozen_dict import FrozenDict
-from flax.linen.attention import make_causal_mask, dot_product_attention_weights, combine_masks
 from typing import Optional
-from transformers.modeling_flax_utils import FlaxPreTrainedModel
+
+import flax.linen as nn
+import jax
+import jax.lax as lax
+import jax.numpy as jnp
+from flax.core.frozen_dict import FrozenDict
+from flax.linen.attention import combine_masks, dot_product_attention_weights, make_causal_mask
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_flax_outputs import BaseModelOutput, CausalLMOutput
+from transformers.modeling_flax_utils import FlaxPreTrainedModel
+
 
 def _compute_freqs_cis(
     head_dim: int,
@@ -603,40 +605,101 @@ class LLaMAMLP(nn.Module):
 
 
 class LLaMABlock(nn.Module):
+    """
+    Single transformer block for LLaMA architecture implementing pre-normalization design:
+    RMSNorm -> Attention -> Residual -> RMSNorm -> FFN -> Residual
+
+    Architecture dimensions:
+    LLaMA-1B:
+        - embedding_size = 2048
+        - num_heads = 32
+        - head_dim = embedding_size / num_heads = 64
+    LLaMA-3B:
+        - embedding_size = 3200
+        - num_heads = 32
+        - head_dim = embedding_size / num_heads = 100
+    """
     config: LLaMAConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
 
     def setup(self):
-        self.attention = LLaMAAttention(self.config, self.dtype, self.param_dtype, self.precision)
-        self.feed_forward = LLaMAMLP(self.config, self.dtype, self.param_dtype, self.precision)
-        self.attention_norm = RMSNorm(self.config.hidden_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype)
-        self.ffn_norm = RMSNorm(self.config.hidden_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype)
-        
+        # Multi-head self-attention layer
+        self.attention = LLaMAAttention(
+            self.config, 
+            self.dtype, 
+            self.param_dtype, 
+            self.precision
+        )
+
+        # SwiGLU feed-forward network
+        self.feed_forward = LLaMAMLP(
+            self.config, 
+            self.dtype, 
+            self.param_dtype, 
+            self.precision
+        )
+
+        # RMSNorm layers (one before attention, one before FFN)
+        self.attention_norm = RMSNorm(
+            self.config.embedding_size,  
+            eps=self.config.rms_norm_eps,
+            dtype=self.dtype,
+            param_dtype=self.param_dtype
+        )
+        self.ffn_norm = RMSNorm(
+            self.config.embedding_size, 
+            eps=self.config.rms_norm_eps,
+            dtype=self.dtype,
+            param_dtype=self.param_dtype
+        )
 
     def __call__(
             self,
-            hidden_states,      # [batch_size, seq_len, hidden_size]
-            attention_mask,     # [batch_size, seq_len]
-            position_ids,       # [batch_size, seq_len]
+            hidden_states,      # Shape: [batch_size, seq_len, embedding_size]
+                               # embedding_size = 2048 for 1B, 3200 for 3B
+            attention_mask,     # Shape: [batch_size, seq_len]
+                               # Boolean mask: 1 for valid tokens, 0 for padding
+            position_ids,       # Shape: [batch_size, seq_len]
+                               # Integer positions for rotary embeddings
             deterministic: bool = True,
             output_attentions: bool = False,
     ):
         """
-        Applies a Transformer block with pre-normalization architecture:
-        LayerNorm -> Attention -> Residual -> LayerNorm -> FFN -> Residual
+        Process input through one transformer block.
+
+        Example dimensions for batch_size=2, seq_len=10:
+        1. Input hidden_states: [2, 10, 2048]  # for LLaMA-1B
+        2. Apply attention_norm: [2, 10, 2048]
+        3. Self-attention + residual: [2, 10, 2048]
+        4. Apply ffn_norm: [2, 10, 2048]
+        5. Feed-forward + residual: [2, 10, 2048]
+
+        Args:
+            hidden_states: Input embeddings or previous layer's output
+            attention_mask: Mask for padding tokens
+            position_ids: Position encodings for RoPE
+            deterministic: If True, disable dropout
+            output_attentions: If True, return attention weights
+
+        Returns:
+            If output_attentions=False:
+                hidden_states: [batch_size, seq_len, embedding_size]
+            If output_attentions=True:
+                (hidden_states, attention_weights)
+                attention_weights: [batch_size, num_heads, seq_len, seq_len]
         """
 
-        # Self-attention block
-        # 1. Apply RMSNorm
-        # [batch_size, seq_len, hidden_size] -> [batch_size, seq_len, hidden_size]
+        # 1. Self-attention block
+        # Apply RMSNorm pre-normalization
+        # Shape maintained: [batch_size, seq_len, embedding_size]
         normed_hidden_states = self.attention_norm(hidden_states)
         
-        # 2. Apply multi-head attention
-        # Returns tuple of (attention_output, attention_weights) if output_attentions=True
-        # attention_output: [batch_size, seq_len, hidden_size]
-        # attention_weights: [batch_size, num_heads, seq_len, seq_len]
+        # Apply multi-head attention
+        # Returns tuple of:
+        # - attention_output: [batch_size, seq_len, embedding_size]
+        # - attention_weights (optional): [batch_size, num_heads, seq_len, seq_len]
         attention_output = self.attention(
             normed_hidden_states,
             attention_mask,
@@ -645,31 +708,34 @@ class LLaMABlock(nn.Module):
             output_attentions,
         )
         
-        # Get attention output (first element of tuple)
-        attention_first_element = attention_output[0]  # [batch_size, seq_len, hidden_size]
+        # Extract attention output from tuple
+        attention_hidden_states = attention_output[0]
         
-        # 3. Add residual connection
-        # [batch_size, seq_len, hidden_size] + [batch_size, seq_len, hidden_size]
-        hidden_states = hidden_states + attention_first_element
+        # Add residual connection
+        # Shape maintained: [batch_size, seq_len, embedding_size]
+        hidden_states = hidden_states + attention_hidden_states
 
-        # Feed-forward block
-        # 1. Apply RMSNorm
-        # [batch_size, seq_len, hidden_size] -> [batch_size, seq_len, hidden_size]
+        # 2. Feed-forward block
+        # Apply RMSNorm pre-normalization
+        # Shape maintained: [batch_size, seq_len, embedding_size]
         normed_hidden_states = self.ffn_norm(hidden_states)
         
-        # 2. Apply SwiGLU feed-forward
-        # [batch_size, seq_len, hidden_size] -> [batch_size, seq_len, hidden_size]
+        # Apply SwiGLU feed-forward network
+        # Shape maintained: [batch_size, seq_len, embedding_size]
         feed_forward_hidden_states = self.feed_forward(
             normed_hidden_states,
             deterministic,
         )
         
-        # 3. Add residual connection
-        # [batch_size, seq_len, hidden_size] + [batch_size, seq_len, hidden_size]
+        # Add residual connection
+        # Final shape: [batch_size, seq_len, embedding_size]
         hidden_states = hidden_states + feed_forward_hidden_states
         
-        return hidden_states  # [batch_size, seq_len, hidden_size]
-        
+        # Return hidden states and optionally attention weights
+        if output_attentions:
+            return (hidden_states, attention_output[1])
+        return hidden_states
+
 
 class LLaMABlockCollection(nn.Module):
     """
@@ -686,7 +752,7 @@ class LLaMABlockCollection(nn.Module):
 
     def setup(self):
         # Create a template block with shared configuration
-        block = LLaMABlock(self.config, self.dtype, self.param_dtype, self.precision)
+        llama_block = LLaMABlock(self.config, self.dtype, self.param_dtype, self.precision)
         
         # Gradient checkpointing for memory efficiency
         if self.config.gradient_checkpointing:
@@ -697,7 +763,9 @@ class LLaMABlockCollection(nn.Module):
         # - 22 for 1B model
         # - 32 for 3B model
         self.blocks = [
-            block(self.config, name=f"block_{i}", dtype=self.dtype, param_dtype=self.param_dtype, precision=self.precision)
+            llama_block(
+                self.config, name=f"block_{i}", dtype=self.dtype, param_dtype=self.param_dtype, precision=self.precision
+            )
             for i in range(self.config.num_hidden_layers)
         ]
 
