@@ -2,8 +2,11 @@ import jax
 import jax.numpy as jnp
 import jax.lax as lax
 import flax.linen as nn
+from flax.core.frozen_dict import FrozenDict
 from flax.linen.attention import make_causal_mask, dot_product_attention_weights, combine_masks
 from typing import Optional
+from transformers.modeling_flax_utils import FlaxPreTrainedModel
+from transformers.configuration_utils import PretrainedConfig
 
 def _compute_freqs_cis(
     head_dim: int,
@@ -97,35 +100,138 @@ def apply_rotary_embedding(xq: jnp.ndarray, xk: jnp.ndarray, freqs_cis: jnp.ndar
 
 
 
-class LLaMAConfig:
+class LLaMAConfig(PretrainedConfig):
     r"""
-    Configuration for the LLaMA model.
+    Configuration class for LLaMA model architecture and hyperparameters.
     
-    This configuration defines the model architecture and parameters.
-    TODO: inherit from transformers.configuration_utils.PretrainedConfig
+    Following the LLaMA paper (Touvron et al., 2023) and official PyTorch implementation:
+    - embedding_size (called 'dim' in paper) determines model size (e.g., 4096 for 7B model)
+    - intermediate_size is typically set to 2.67 * embedding_size
+    - num_attention_heads should divide embedding_size evenly (head_dim = embedding_size / num_heads)
+    
+    Standard LLaMA configurations:
+    - 7B:   dim=4096,  n_layers=32, n_heads=32,  n_kv_heads=32
+    - 13B:  dim=5120,  n_layers=40, n_heads=40,  n_kv_heads=40
+    - 30B:  dim=6656,  n_layers=60, n_heads=52,  n_kv_heads=52
+    - 65B:  dim=8192,  n_layers=80, n_heads=64,  n_kv_heads=64
+    - 70B:  dim=8192,  n_layers=80, n_heads=64,  n_kv_heads=8 (uses GQA)
 
     Args:
         vocab_size (int, default=32000): 
-            Vocabulary size of the LLaMA model.
+            Size of the tokenizer vocabulary. Default matches official LLaMA tokenizer.
+        
         embedding_size (int, default=4096):
-            Dimension of the embedding representations.
+            Hidden size of the model (called 'dim' in LLaMA paper). 
+            Determines size of embeddings and hidden layers.
+            
         intermediate_size (int, default=11008):
-            Dimension of the MLP representation.
+            Size of the MLP's hidden layer. Default is ~2.67 * embedding_size,
+            following the scaling rule from the paper.
+            
         num_hidden_layers (int, default=32):
-            Number of hidden layers in the Transformer encoder.
+            Number of transformer layers (called 'n_layers' in paper).
+            
         num_attention_heads (int, default=32):
-            Number of attention heads for each attention layer in the Transformer encoder.
-        hidden_activation (str, default="silu"):
-            The nonlinear activation function in the decoder.
+            Number of attention heads per layer (called 'n_heads' in paper).
+            Should divide embedding_size evenly.            
+
+        num_key_value_heads (Optional[int], default=None):
+            Number of key/value heads for Grouped Query Attention (GQA).
+            If None, defaults to num_attention_heads (standard attention).
+            For 70B model, this is 8 to reduce memory usage.
+            
         max_sequence_length (int, default=2048):
-            The maximum sequence length for the model (for RoPE computation).
-        initializer_range (float, default=0.02):
-            The standard deviation of the truncated normal initializer for initializing the weights.
+            Maximum sequence length for position embeddings (RoPE).
+            Original LLaMA uses 2048, LLaMA-2 extends this to 4096.
+            
         rms_norm_eps (float, default=1e-6):
-            The epsilon value for RMS normalization.
+            Epsilon for RMSNorm layers, for numerical stability.
+            
+        initializer_range (float, default=0.02):
+            Standard deviation for normal initialization of weights.
+            
         use_cache (bool, default=True):
-            Whether to use caching for the attention scores.
+            Whether to use KV cache during generation for efficiency.
+            
+        residual_prob_dropout (float, default=0.0):
+            Dropout probability for residual connections.
+            LLaMA paper uses no dropout by default.
+            
+        embedding_prob_dropout (float, default=0.0):
+            Dropout probability for embeddings.
+            
+        attention_prob_dropout (float, default=0.0):
+            Dropout probability for attention weights.
+            
+        tie_word_embeddings (bool, default=False):
+            Whether to tie input and output embeddings.
+            
+        gradient_checkpointing (bool, default=False):
+            If True, use gradient checkpointing to save memory.
+            
+        rope_theta (float, default=10000.0):
+            Base period for rotary position embeddings.
     """
+    model_type: str = "llama"
+
+    def __init__(
+            self,
+            vocab_size: int = 32000,
+            embedding_size: int = 4096,  # Called 'dim' in paper, determines model size
+            intermediate_size: int = 11008,  # ~2.67 * embedding_size
+            num_hidden_layers: int = 32,
+            num_attention_heads: int = 32,
+            num_key_value_heads: Optional[int] = None,  # For GQA, defaults to num_attention_heads
+            max_sequence_length: int = 2048,
+            rms_norm_eps: float = 1e-6,
+            initializer_range: float = 0.02,
+            use_cache: bool = True,
+            pad_token_id: int = -1,
+            bos_token_id: int = 1,
+            eos_token_id: int = 2,
+            residual_prob_dropout: float = 0.0,  # LLaMA uses no dropout
+            embedding_prob_dropout: float = 0.0,
+            attention_prob_dropout: float = 0.0,
+            tie_word_embeddings: bool = False,
+            gradient_checkpointing: bool = False,
+            rope_theta: float = 10000.0,
+            **kwargs,
+    ):
+        # Initialize model configuration
+        self.vocab_size = vocab_size
+        self.embedding_size = embedding_size  # Called 'dim' in paper
+        self.initializer_range = initializer_range
+        self.intermediate_size = intermediate_size
+        self.num_hidden_layers = num_hidden_layers
+        self.num_attention_heads = num_attention_heads
+        
+        # Setup GQA (Grouped Query Attention)
+        if num_key_value_heads is None:
+            num_key_value_heads = num_attention_heads  # Standard attention
+        self.num_key_value_heads = num_key_value_heads
+        
+        # Model architecture parameters
+        self.max_sequence_length = max_sequence_length
+        self.rms_norm_eps = rms_norm_eps
+        self.use_cache = use_cache
+        
+        # Dropout rates (all 0.0 in original LLaMA)
+        self.residual_prob_dropout = residual_prob_dropout
+        self.embedding_prob_dropout = embedding_prob_dropout
+        self.attention_prob_dropout = attention_prob_dropout
+        
+        # Additional configuration
+        self.tie_word_embeddings = tie_word_embeddings
+        self.gradient_checkpointing = gradient_checkpointing
+        self.rope_theta = rope_theta
+        
+        # Initialize parent class with token IDs
+        super().__init__(
+            pad_token_id=pad_token_id,
+            bos_token_id=bos_token_id,
+            eos_token_id=eos_token_id,
+            **kwargs,
+        )
 
 
 
@@ -524,6 +630,50 @@ class LLaMABlock(nn.Module):
         
         return hidden_states  # [batch_size, seq_len, hidden_size]
         
+
+class LLaMAPreTrainedModel(FlaxPreTrainedModel):
+    """
+    Abstrat class to handle the weights initialization and interfacing of models.
+    """
+
+    config_class = LLaMAConfig
+    base_model_prefix = "transformer"
+    module_class: Optional[nn.Module] = None
+
+    def __init__(
+            self,
+            config: LLaMAConfig,
+            input_shape: tuple = (1, 1),
+            seed: int = 0,
+            dtype: jnp.dtype = jnp.float32,
+            _do_init: bool = True,
+            **kwargs,
+    ):
+        if self.module_class is None:
+            raise ValueError("`module_class` must be specified")
+
+        module = self.module_class(config, dtype=dtype, **kwargs)
+        super().__init__(config, module, input_shape, seed, dtype, _do_init, **kwargs)
+
+    def init_weights(
+            self,
+            rng: jax.random.PRNGKey,
+            input_shape: tuple[int, ...],
+            params: FrozenDict = None,
+    ) -> FrozenDict:
+        input_ids = jnp.zeros(input_shape, dtype="i4")
+        attention_mask = jnp.ones_like(input_ids)
+        position_ids = jnp.broadcast_to(jnp.atleast_2d(input_ids).shape[1], input_shape)
+        params_rng, dropout_rng = jax.random.split(rng)
+        rngs = {"params": params_rng, "dropout": dropout_rng}
+
+        # TODO initialization of module_init_outputs
+        pass
+    
+
+            
+
+
 
         
 
