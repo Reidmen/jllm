@@ -7,6 +7,7 @@ from flax.linen.attention import make_causal_mask, dot_product_attention_weights
 from typing import Optional
 from transformers.modeling_flax_utils import FlaxPreTrainedModel
 from transformers.configuration_utils import PretrainedConfig
+from transformers.modeling_flax_outputs import BaseModelOutput, CausalLMOutput
 
 def _compute_freqs_cis(
     head_dim: int,
@@ -233,6 +234,45 @@ class LLaMAConfig(PretrainedConfig):
             **kwargs,
         )
 
+
+class LLaMAPreTrainedModel(FlaxPreTrainedModel):
+    """
+    Abstrat class to handle the weights initialization and interfacing of models.
+    """
+
+    config_class = LLaMAConfig
+    base_model_prefix = "transformer"
+    module_class: Optional[nn.Module] = None
+
+    def __init__(
+            self,
+            config: LLaMAConfig,
+            input_shape: tuple = (1, 1),
+            seed: int = 0,
+            dtype: jnp.dtype = jnp.float32,
+            _do_init: bool = True,
+            **kwargs,
+    ):
+        if self.module_class is None:
+            raise ValueError("`module_class` must be specified")
+
+        module = self.module_class(config, dtype=dtype, **kwargs)
+        super().__init__(config, module, input_shape, seed, dtype, _do_init, **kwargs)
+
+    def init_weights(
+            self,
+            rng: jax.random.PRNGKey,
+            input_shape: tuple[int, ...],
+            params: FrozenDict = None,
+    ) -> FrozenDict:
+        input_ids = jnp.zeros(input_shape, dtype="i4")
+        attention_mask = jnp.ones_like(input_ids)
+        position_ids = jnp.broadcast_to(jnp.atleast_2d(input_ids).shape[1], input_shape)
+        params_rng, dropout_rng = jax.random.split(rng)
+        rngs = {"params": params_rng, "dropout": dropout_rng}
+
+        # TODO initialization of module_init_outputs
+        pass
 
 
 class RMSNorm(nn.Module):
@@ -631,56 +671,289 @@ class LLaMABlock(nn.Module):
         return hidden_states  # [batch_size, seq_len, hidden_size]
         
 
-class LLaMAPreTrainedModel(FlaxPreTrainedModel):
+class LLaMABlockCollection(nn.Module):
     """
-    Abstrat class to handle the weights initialization and interfacing of models.
+    Collection of LLaMA transformer blocks that processes the input sequence through multiple layers.
+    For different model sizes:
+    - 1B model: 22 layers
+    - 3B model: 32 layers
+    Each layer contains self-attention and feed-forward components.
     """
+    config: LLaMAConfig
+    dtype: jnp.dtype = jnp.float32
+    param_dtype: jnp.dtype = jnp.float32
+    precision: Optional[jax.lax.Precision] = None
 
-    config_class = LLaMAConfig
-    base_model_prefix = "transformer"
-    module_class: Optional[nn.Module] = None
+    def setup(self):
+        # Create a template block with shared configuration
+        block = LLaMABlock(self.config, self.dtype, self.param_dtype, self.precision)
+        
+        # Gradient checkpointing for memory efficiency
+        if self.config.gradient_checkpointing:
+            raise NotImplementedError("Gradient checkpointing is not implemented for LLaMABlockCollection")
 
-    def __init__(
-            self,
-            config: LLaMAConfig,
-            input_shape: tuple = (1, 1),
-            seed: int = 0,
-            dtype: jnp.dtype = jnp.float32,
-            _do_init: bool = True,
-            **kwargs,
+        # Create list of transformer blocks
+        # num_hidden_layers is:
+        # - 22 for 1B model
+        # - 32 for 3B model
+        self.blocks = [
+            block(self.config, name=f"block_{i}", dtype=self.dtype, param_dtype=self.param_dtype, precision=self.precision)
+            for i in range(self.config.num_hidden_layers)
+        ]
+
+    def __call__(
+        self,
+        hidden_states,      # Shape: [batch_size, seq_len, embedding_size]
+        attention_mask,     # Shape: [batch_size, seq_len]
+        position_ids,       # Shape: [batch_size, seq_len]
+        deterministic: bool = True,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
     ):
-        if self.module_class is None:
-            raise ValueError("`module_class` must be specified")
+        # Initialize collectors for intermediate outputs if requested
+        # [(batch_size, seq_len, embedding_size)] * (num_layers + 1)
+        all_hidden_states = () if output_hidden_states else None
+        
+        # all_attentions will contain attention weights from each layer:
+        # [(batch_size, num_heads, seq_len, seq_len)] * num_layers
+        all_attentions = () if output_attentions else None
 
-        module = self.module_class(config, dtype=dtype, **kwargs)
-        super().__init__(config, module, input_shape, seed, dtype, _do_init, **kwargs)
+        # Process through each transformer block sequentially
+        for block in self.blocks:
+            # Store current hidden states before block transformation if requested
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
 
-    def init_weights(
-            self,
-            rng: jax.random.PRNGKey,
-            input_shape: tuple[int, ...],
-            params: FrozenDict = None,
-    ) -> FrozenDict:
-        input_ids = jnp.zeros(input_shape, dtype="i4")
-        attention_mask = jnp.ones_like(input_ids)
-        position_ids = jnp.broadcast_to(jnp.atleast_2d(input_ids).shape[1], input_shape)
-        params_rng, dropout_rng = jax.random.split(rng)
-        rngs = {"params": params_rng, "dropout": dropout_rng}
+            # Process through single transformer block
+            # Returns tuple of:
+            # - hidden_states: [batch_size, seq_len, embedding_size]
+            # - attention_weights (optional): [batch_size, num_heads, seq_len, seq_len]
+            layer_outputs = block(
+                hidden_states,
+                attention_mask,
+                position_ids,
+                deterministic,
+                output_attentions,
+            )
 
-        # TODO initialization of module_init_outputs
-        pass
+            # Update hidden states for next layer
+            hidden_states = layer_outputs[0]
+
+            # Store attention weights if requested
+            if output_attentions:
+                all_attentions += (layer_outputs[1],)
+
+        # Prepare final output tuple:
+        # - hidden_states: [batch_size, seq_len, embedding_size]
+        # - all_hidden_states (optional): tuple of [batch_size, seq_len, embedding_size]
+        # - all_attentions (optional): tuple of [batch_size, num_heads, seq_len, seq_len]
+        outputs = (hidden_states, all_hidden_states, all_attentions)
+
+        return outputs
+
+
+class LLaMAModule(nn.Module):
+    """
+    Core LLaMA model implementing the transformer architecture.
+    For LLaMA 1B/3B configurations:
+    - 1B: embedding_size=2048, n_layers=22, n_heads=32
+    - 3B: embedding_size=3200, n_layers=32, n_heads=32
+    """
+    config: LLaMAConfig
+    dtype: jnp.dtype = jnp.float32
+    param_dtype: jnp.dtype = jnp.float32
+    precision: Optional[jax.lax.Precision] = None
+
+    def setup(self):
+        # Store embedding dimension from config (2048 for 1B, 3200 for 3B)
+        self.embed_dim = self.config.embedding_size
+
+        # Token embedding layer: maps token IDs to embedding vectors
+        # Shape: [vocab_size, embedding_size]
+        self.wte = nn.Embed(
+            num_embeddings=self.config.vocab_size,
+            features=self.config.embedding_size,
+            embedding_init=jax.nn.initializers.normal(stddev=self.config.initializer_range),
+            dtype=self.dtype,
+            param_dtype=self.param_dtype,
+        )
+
+        # Embedding dropout layer
+        self.dropout = nn.Dropout(rate=self.config.dropout)
+
+        # Main transformer blocks
+        self.llama_block_collection = LLaMABlockCollection(
+            self.config,
+            dtype=self.dtype,
+            param_dtype=self.param_dtype,
+            precision=self.precision,
+        )
+
+        # Final layer normalization
+        self.rms_norm = RMSNorm(
+            self.config.hidden_size,
+            eps=self.config.rms_norm_eps,
+            dtype=self.dtype,
+            param_dtype=self.param_dtype,
+        )
+
+    def __call__(
+        self,
+        input_ids,          # [batch_size, seq_len] - Input token IDs
+        attention_mask,     # [batch_size, seq_len] - Mask for padding tokens
+        position_ids,       # [batch_size, seq_len] - Position IDs for RoPE
+        deterministic: bool = True,
+        init_cache: bool = False,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+    ):
+        # 1. Convert input tokens to embeddings
+        # [batch_size, seq_len] -> [batch_size, seq_len, embedding_size]
+        input_embeddings = self.wte(input_ids.astype("i4"))
+        
+        # 2. Apply embedding dropout
+        hidden_states = self.dropout(input_embeddings, deterministic=deterministic)
+
+        # 3. Process through transformer blocks
+        # Returns tuple of:
+        # - Final hidden states [batch_size, seq_len, hidden_size]
+        # - All layer hidden states (if output_hidden_states=True)
+        # - All layer attention weights (if output_attentions=True)
+        outputs = self.llama_block_collection(
+            hidden_states,
+            attention_mask,
+            position_ids,
+            deterministic=deterministic,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            init_cache=init_cache,
+            return_dict=return_dict,
+        )
+
+        # 4. Apply final layer normalization
+        hidden_states = self.rms_norm(outputs[0])
+
+        # 5. Handle output collection
+        if output_hidden_states:
+            # Add final hidden states to all layer hidden states
+            all_hidden_states = outputs[1] + (hidden_states,)
+            outputs = (hidden_states, all_hidden_states) + outputs[2:]
+        else:
+            outputs = (hidden_states,) + outputs[1:]
+        
+        # 6. Return structured output
+        return BaseModelOutput(
+            last_hidden_state=hidden_states,  # Final layer output
+            hidden_states=outputs[1],         # All layer outputs (optional)
+            attentions=outputs[-1]           # Attention weights (optional)
+        )
+
+class LLaMAForCausalLM(LLaMAPreTrainedModel):
+    """
+    LLaMA model with a language modeling head.
+    Adds a linear layer on top of the transformer to predict next token probabilities.
     
+    Key architectural details for 1B/3B:
+    1B model:
+    - embedding_size = 2048
+    - n_layers = 22
+    - n_heads = 32
+    - vocab_size = 32000
+    
+    3B model:
+    - embedding_size = 3200
+    - n_layers = 32
+    - n_heads = 32
+    - vocab_size = 32000
+    """
+    config: LLaMAConfig
+    dtype: jnp.dtype = jnp.float32
+    param_dtype: jnp.dtype = jnp.float32
+    precision: Optional[jax.lax.Precision] = None
 
-            
+    def setup(self):
+        # Core transformer model
+        self.llama_module = LLaMAModule(self.config, dtype=self.dtype)
 
+        # Language modeling head
+        # Projects hidden states to vocabulary distribution
+        # Shape: [hidden_size, vocab_size]
+        self.lm_head = nn.Dense(
+            features=self.config.vocab_size,
+            dtype=self.dtype,
+            param_dtype=self.param_dtype,
+            use_bias=False,
+            kernel_init=jax.nn.initializers.normal(stddev=self.config.initializer_range),
+            precision=self.precision,
+        )
 
-
+    def prepare_inputs_for_generation(
+        self,
+        input_ids,
+        max_seq_length: int,
+        attention_mask: Optional[jnp.ndarray] = None,
+    ) -> dict[str, jnp.ndarray]:
+        batch_size, seq_len = input_ids.shape
+        past_key_values = self.init_cache(batch_size, max_seq_length)
+        extended_attention_mask = jnp.ones((batch_size, max_seq_length), dtype="i4")
+        if attention_mask is not None:
+            position_ids = attention_mask.cumsum(axis=-1) - 1
+            extended_attention_mask = lax.dynamic_update_slice(extended_attention_mask, attention_mask, (0, 0))
+        else:
+            position_ids = jnp.broadcast_to(jnp.arange(seq_len, dtype="i4")[None, :], (batch_size, seq_len))
         
+        return {
+            "past_key_values": past_key_values,
+            "attention_mask": extended_attention_mask,
+            "position_ids": position_ids,
+        }
+
+    def update_inputs_for_generation(self, model_outputs, model_kwargs):
+        model_kwargs["past_key_values"] = model_outputs.past_key_values
+        model_kwargs["position_ids"] = model_outputs["position_ids"][:, -1] + 1
+        return model_kwargs
 
 
+    def __call__(
+        self,
+        input_ids,
+        attention_mask,
+        position_ids,
+        deterministic: bool = True,
+        init_cache: bool = False,
+        output_attentions: bool = False,
+        output_hidden_states: bool = False,
+        return_dict: bool = True,
+    ):
+        # 1. Get transformer outputs
+        outputs = self.llama_module(
+            input_ids,
+            attention_mask,
+            position_ids,
+            deterministic=deterministic,
+            init_cache=init_cache,
+            output_attentions=output_attentions,
+            return_dict=return_dict,
+        )
 
+        hidden_states = outputs[0]
 
-        
+        # 2. Project to vocabulary distribution
+        if self.config.tie_word_embeddings:
+            # Reuse input embedding weights for output projection
+            shared_kernel = self.llama_module.variables["params"]["wte"]["embedding"].T
+            lm_logits = self.lm_head.apply({"params": {"kernel": shared_kernel}}, hidden_states)
+        else:
+            # Use separate output projection weights
+            lm_logits = self.lm_head(hidden_states)
 
+        if not return_dict:
+            return (lm_logits,) + outputs[1:]
 
-
+        # 3. Return structured output
+        return CausalLMOutput(
+            logits=lm_logits,           # Token probabilities
+            hidden_states=outputs.hidden_states,  # Optional layer outputs
+            attentions=outputs.attentions,      # Optional attention weights
+        )
