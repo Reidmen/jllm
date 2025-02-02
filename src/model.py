@@ -405,6 +405,17 @@ class LLaMAAttention(nn.Module):
             dtype=self.dtype,
         )
 
+    def _split_heads(self, hidden_states: jnp.ndarray, num_heads: int) -> jnp.ndarray:
+        """Split the last dimension into multiple heads."""
+        batch_size, seq_len, _ = hidden_states.shape
+        return hidden_states.reshape(batch_size, seq_len, num_heads, self.head_dim)
+
+    def _merge_heads(self, hidden_states: jnp.ndarray) -> jnp.ndarray:
+        """Merge the last dimension into a single dimension."""
+        # NOTE: self.embed_dim = num_heads * head_dim
+        batch_size, seq_len, num_heads, head_dim = hidden_states.shape
+        return hidden_states.reshape(batch_size, seq_len, self.embed_dim)
+
     
     def __call__(
             self,
@@ -417,7 +428,6 @@ class LLaMAAttention(nn.Module):
     ):
         # Project input hidden states to Q, K, V matrices
         # hidden_states: [batch_size, seq_len, embedding_size]
-        # self.wq weight: [embedding_size, num_heads * head_dim]
         # Output shapes: [batch_size, seq_len, {num_heads or num_kv_heads} * head_dim]
         xq = self.wq(hidden_states)  # Projects to num_heads * head_dim
         xk = self.wk(hidden_states)  # Projects to num_kv_heads * head_dim
@@ -491,7 +501,7 @@ class LLaMAAttention(nn.Module):
             jnp.full(attention_mask.shape, jnp.finfo(self.dtype).min).astype(self.dtype),
         )
 
-        # Implement grouped-query attention by repeating KV heads
+        # Grouped-query attention by repeating KV heads
         # Input: [batch_size, seq_len, n_kv_heads, head_dim]
         # Output: [batch_size, seq_len, num_heads, head_dim]
         # Each KV head is repeated num_key_value_groups times (num_heads = n_kv_heads * num_key_value_groups)
