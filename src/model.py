@@ -19,9 +19,9 @@ def _compute_freqs_cis(
 ) -> jnp.ndarray:
     """
     Compute the frequencies for the Rotary Position Embedding (RoPE) rotation.
-    
+
     The RoPE rotation applies a position-dependent rotation to the key and query vectors
-    in attention. For a given position m and dimension d in the embedding space, the 
+    in attention. For a given position m and dimension d in the embedding space, the
     rotation frequency is computed as:
 
     freq(m,d) = m * θ^(-d/D)
@@ -51,7 +51,7 @@ def repeat_kv(hidden_states: jnp.ndarray, n_rep: int) -> jnp.ndarray:
 
     if n_rep == 1:
         return hidden_states
-    
+
     hidden_states = hidden_states[:, :, :, jnp.newaxis, :].repeat(1, 1, 1, n_rep, 1)
     return hidden_states.reshape(batch_size, seq_len, n_kv_heads * n_rep, head_dim)
 
@@ -59,7 +59,7 @@ def repeat_kv(hidden_states: jnp.ndarray, n_rep: int) -> jnp.ndarray:
 def apply_rotary_embedding(xq: jnp.ndarray, xk: jnp.ndarray, freqs_cis: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
     """
     Apply the Rotary Position Embedding (RoPE) rotation to the query and key vectors.
-    
+
     Shape of the input tensors:
         xq: [batch_size, seq_len, num_heads, head_dim]        # Query vectors
         xk: [batch_size, seq_len, num_kv_heads, head_dim]     # Key vectors
@@ -74,7 +74,7 @@ def apply_rotary_embedding(xq: jnp.ndarray, xk: jnp.ndarray, freqs_cis: jnp.ndar
     # [..., head_dim/2, 2] -> [..., head_dim/2]
     _xq = jax.lax.complex(reshape_xq[..., 0], reshape_xq[..., 1])
     _xk = jax.lax.complex(reshape_xk[..., 0], reshape_xk[..., 1])
-    
+
     # Add head dimension to freqs_cis for broadcasting
     # [batch_size, seq_len, head_dim/2] -> [batch_size, seq_len, 1, head_dim/2]
     # This allows broadcasting when multiplying with different numbers of heads
@@ -88,30 +88,25 @@ def apply_rotary_embedding(xq: jnp.ndarray, xk: jnp.ndarray, freqs_cis: jnp.ndar
     xq_out = _xq * freqs_cis  # Complex multiplication applies the rotation
     # Convert back to real numbers by separating real and imaginary parts
     # [..., head_dim/2] -> [..., head_dim]
-    xq_out = jnp.stack((xq_out.real, xq_out.imag), axis=-1).reshape(
-        xq_out.shape[:-1], -1
-    )
-    
+    xq_out = jnp.stack((xq_out.real, xq_out.imag), axis=-1).reshape(xq_out.shape[:-1], -1)
+
     # Same rotation process for key vectors
     xk_out = _xk * freqs_cis
-    xk_out = jnp.stack((xk_out.real, xk_out.imag), axis=-1).reshape(
-        xk_out.shape[:-1], -1
-    )
+    xk_out = jnp.stack((xk_out.real, xk_out.imag), axis=-1).reshape(xk_out.shape[:-1], -1)
 
     # Convert back to original dtype and return
     return xq_out.astype(xq.dtype), xk_out.astype(xk.dtype)
 
 
-
 class LLaMAConfig(PretrainedConfig):
     r"""
     Configuration class for LLaMA model architecture and hyperparameters.
-    
+
     Following the LLaMA paper (Touvron et al., 2023) and official PyTorch implementation:
     - embedding_size (called 'dim' in paper) determines model size (e.g., 4096 for 7B model)
     - intermediate_size is typically set to 2.67 * embedding_size
     - num_attention_heads should divide embedding_size evenly (head_dim = embedding_size / num_heads)
-    
+
     Standard LLaMA configurations:
     - 7B:   dim=4096,  n_layers=32, n_heads=32,  n_kv_heads=32
     - 13B:  dim=5120,  n_layers=40, n_heads=40,  n_kv_heads=40
@@ -120,85 +115,86 @@ class LLaMAConfig(PretrainedConfig):
     - 70B:  dim=8192,  n_layers=80, n_heads=64,  n_kv_heads=8 (uses GQA)
 
     Args:
-        vocab_size (int, default=32000): 
+        vocab_size (int, default=32000):
             Size of the tokenizer vocabulary. Default matches official LLaMA tokenizer.
-        
+
         embedding_size (int, default=4096):
-            Hidden size of the model (called 'dim' in LLaMA paper). 
+            Hidden size of the model (called 'dim' in LLaMA paper).
             Determines size of embeddings and hidden layers.
-            
+
         intermediate_size (int, default=11008):
             Size of the MLP's hidden layer. Default is ~2.67 * embedding_size,
             following the scaling rule from the paper.
-            
+
         num_hidden_layers (int, default=32):
             Number of transformer layers (called 'n_layers' in paper).
-            
+
         num_attention_heads (int, default=32):
             Number of attention heads per layer (called 'n_heads' in paper).
-            Should divide embedding_size evenly.            
+            Should divide embedding_size evenly.
 
         num_key_value_heads (Optional[int], default=None):
             Number of key/value heads for Grouped Query Attention (GQA).
             If None, defaults to num_attention_heads (standard attention).
             For 70B model, this is 8 to reduce memory usage.
-            
+
         max_sequence_length (int, default=2048):
             Maximum sequence length for position embeddings (RoPE).
             Original LLaMA uses 2048, LLaMA-2 extends this to 4096.
-            
+
         rms_norm_eps (float, default=1e-6):
             Epsilon for RMSNorm layers, for numerical stability.
-            
+
         initializer_range (float, default=0.02):
             Standard deviation for normal initialization of weights.
-            
+
         use_cache (bool, default=True):
             Whether to use KV cache during generation for efficiency.
-            
+
         residual_prob_dropout (float, default=0.0):
             Dropout probability for residual connections.
             LLaMA paper uses no dropout by default.
-            
+
         embedding_prob_dropout (float, default=0.0):
             Dropout probability for embeddings.
-            
+
         attention_prob_dropout (float, default=0.0):
             Dropout probability for attention weights.
-            
+
         tie_word_embeddings (bool, default=False):
             Whether to tie input and output embeddings.
-            
+
         gradient_checkpointing (bool, default=False):
             If True, use gradient checkpointing to save memory.
-            
+
         rope_theta (float, default=10000.0):
             Base period for rotary position embeddings.
     """
+
     model_type: str = "llama"
 
     def __init__(
-            self,
-            vocab_size: int = 32000,
-            embedding_size: int = 4096,  # Called 'dim' in paper, determines model size
-            intermediate_size: int = 11008,  # ~2.67 * embedding_size
-            num_hidden_layers: int = 32,
-            num_attention_heads: int = 32,
-            num_key_value_heads: Optional[int] = None,  # For GQA, defaults to num_attention_heads
-            max_sequence_length: int = 2048,
-            rms_norm_eps: float = 1e-6,
-            initializer_range: float = 0.02,
-            use_cache: bool = True,
-            pad_token_id: int = -1,
-            bos_token_id: int = 1,
-            eos_token_id: int = 2,
-            residual_prob_dropout: float = 0.0,  # LLaMA uses no dropout
-            embedding_prob_dropout: float = 0.0,
-            attention_prob_dropout: float = 0.0,
-            tie_word_embeddings: bool = False,
-            gradient_checkpointing: bool = False,
-            rope_theta: float = 10000.0,
-            **kwargs,
+        self,
+        vocab_size: int = 32000,
+        embedding_size: int = 4096,  # Called 'dim' in paper, determines model size
+        intermediate_size: int = 11008,  # ~2.67 * embedding_size
+        num_hidden_layers: int = 32,
+        num_attention_heads: int = 32,
+        num_key_value_heads: Optional[int] = None,  # For GQA, defaults to num_attention_heads
+        max_sequence_length: int = 2048,
+        rms_norm_eps: float = 1e-6,
+        initializer_range: float = 0.02,
+        use_cache: bool = True,
+        pad_token_id: int = -1,
+        bos_token_id: int = 1,
+        eos_token_id: int = 2,
+        residual_prob_dropout: float = 0.0,  # LLaMA uses no dropout
+        embedding_prob_dropout: float = 0.0,
+        attention_prob_dropout: float = 0.0,
+        tie_word_embeddings: bool = False,
+        gradient_checkpointing: bool = False,
+        rope_theta: float = 10000.0,
+        **kwargs,
     ):
         # Initialize model configuration
         self.vocab_size = vocab_size
@@ -207,27 +203,27 @@ class LLaMAConfig(PretrainedConfig):
         self.intermediate_size = intermediate_size
         self.num_hidden_layers = num_hidden_layers
         self.num_attention_heads = num_attention_heads
-        
+
         # Setup GQA (Grouped Query Attention)
         if num_key_value_heads is None:
             num_key_value_heads = num_attention_heads  # Standard attention
         self.num_key_value_heads = num_key_value_heads
-        
+
         # Model architecture parameters
         self.max_sequence_length = max_sequence_length
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
-        
+
         # Dropout rates (all 0.0 in original LLaMA)
         self.residual_prob_dropout = residual_prob_dropout
         self.embedding_prob_dropout = embedding_prob_dropout
         self.attention_prob_dropout = attention_prob_dropout
-        
+
         # Additional configuration
         self.tie_word_embeddings = tie_word_embeddings
         self.gradient_checkpointing = gradient_checkpointing
         self.rope_theta = rope_theta
-        
+
         # Initialize parent class with token IDs
         super().__init__(
             pad_token_id=pad_token_id,
@@ -247,13 +243,13 @@ class LLaMAPreTrainedModel(FlaxPreTrainedModel):
     module_class: Optional[nn.Module] = None
 
     def __init__(
-            self,
-            config: LLaMAConfig,
-            input_shape: tuple = (1, 1),
-            seed: int = 0,
-            dtype: jnp.dtype = jnp.float32,
-            _do_init: bool = True,
-            **kwargs,
+        self,
+        config: LLaMAConfig,
+        input_shape: tuple = (1, 1),
+        seed: int = 0,
+        dtype: jnp.dtype = jnp.float32,
+        _do_init: bool = True,
+        **kwargs,
     ):
         if self.module_class is None:
             raise ValueError("`module_class` must be specified")
@@ -262,17 +258,11 @@ class LLaMAPreTrainedModel(FlaxPreTrainedModel):
         super().__init__(config, module, input_shape, seed, dtype, _do_init, **kwargs)
 
     def init_weights(
-            self,
-            rng: jax.random.PRNGKey,
-            input_shape: tuple[int, ...],
-            params: FrozenDict = None,
+        self,
+        rng: jax.random.PRNGKey,
+        input_shape: tuple[int, ...],
+        params: FrozenDict = None,
     ) -> FrozenDict:
-        input_ids = jnp.zeros(input_shape, dtype="i4")
-        attention_mask = jnp.ones_like(input_ids)
-        position_ids = jnp.broadcast_to(jnp.atleast_2d(input_ids).shape[1], input_shape)
-        params_rng, dropout_rng = jax.random.split(rng)
-        rngs = {"params": params_rng, "dropout": dropout_rng}
-
         # TODO initialization of module_init_outputs
         pass
 
@@ -312,7 +302,7 @@ class RMSNorm(nn.Module):
         # mean(...): [batch_size, seq_len, 1]
         # rsqrt(...): [batch_size, seq_len, 1]
         rms = jax.lax.rsqrt(jnp.square(x).mean(axis=-1, keepdims=True) + self.eps)
-        
+
         # Normalize input using RMS
         # x: [batch_size, seq_len, hidden_size]
         # output: [batch_size, seq_len, hidden_size]
@@ -323,8 +313,6 @@ class RMSNorm(nn.Module):
         # output: [batch_size, seq_len, hidden_size]
         weights = jnp.asarray(self.weights, self.dtype)
         return output * weights
-
-
 
 
 class LLaMAAttention(nn.Module):
@@ -397,7 +385,7 @@ class LLaMAAttention(nn.Module):
         self.causal_mask = make_causal_mask(
             jnp.ones((1, config.max_sequence_length), dtype="bool"),
         )
-        
+
         self.freqs_cis = _compute_freqs_cis(
             self.head_dim,
             config.max_sequence_length * 2,
@@ -413,18 +401,17 @@ class LLaMAAttention(nn.Module):
     def _merge_heads(self, hidden_states: jnp.ndarray) -> jnp.ndarray:
         """Merge the last dimension into a single dimension."""
         # NOTE: self.embed_dim = num_heads * head_dim
-        batch_size, seq_len, num_heads, head_dim = hidden_states.shape
+        batch_size, seq_len, _ = hidden_states.shape
         return hidden_states.reshape(batch_size, seq_len, self.embed_dim)
 
-    
     def __call__(
-            self,
-            hidden_states,      # [batch_size, seq_len, embedding_size]
-            attention_mask,     # [batch_size, seq_len] - boolean mask, True for valid positions
-            position_ids,       # [batch_size, seq_len] - integer positions for RoPE
-            deterministic: bool = True,
-            init_cache: bool = False,
-            output_attentions: bool = False,
+        self,
+        hidden_states,  # [batch_size, seq_len, embedding_size]
+        attention_mask,  # [batch_size, seq_len] - boolean mask, True for valid positions
+        position_ids,  # [batch_size, seq_len] - integer positions for RoPE
+        deterministic: bool = True,
+        init_cache: bool = False,
+        output_attentions: bool = False,
     ):
         # Project input hidden states to Q, K, V matrices
         # hidden_states: [batch_size, seq_len, embedding_size]
@@ -432,7 +419,7 @@ class LLaMAAttention(nn.Module):
         xq = self.wq(hidden_states)  # Projects to num_heads * head_dim
         xk = self.wk(hidden_states)  # Projects to num_kv_heads * head_dim
         xv = self.wv(hidden_states)  # Projects to num_kv_heads * head_dim
-        
+
         # Reshape to separate head dimension for multi-head attention
         # For xq: [batch_size, seq_len, num_heads * head_dim] -> [batch_size, seq_len, num_heads, head_dim]
         # For xk,xv: [batch_size, seq_len, num_kv_heads * head_dim] -> [batch_size, seq_len, num_kv_heads, head_dim]
@@ -463,7 +450,7 @@ class LLaMAAttention(nn.Module):
             max_decoder_length = self.variables["cache"]["cache_key"].shape[1]
             # Dynamic slice to get mask for current position
             causal_mask = lax.dynamic_slice(
-                self.causal_mask, 
+                self.causal_mask,
                 (0, 0, mask_shift, 0),
                 (1, 1, query_length, max_decoder_length),
             )
@@ -515,10 +502,14 @@ class LLaMAAttention(nn.Module):
         # bias: [batch_size, 1, query_length, key_length]
         # Output: [batch_size, num_heads, query_length, key_length]
         attention_weights = dot_product_attention_weights(
-            xq, xk, 
-            bias=attention_bias, dropout_rng=dropout_rng, 
+            xq,
+            xk,
+            bias=attention_bias,
+            dropout_rng=dropout_rng,
             dropout_rate=self.config.attention_dropout,
-            deterministic=deterministic, dtype=self.dtype, precision=self.precision,
+            deterministic=deterministic,
+            dtype=self.dtype,
+            precision=self.precision,
         )
 
         # Apply attention weights to values
@@ -527,11 +518,11 @@ class LLaMAAttention(nn.Module):
         # Matrix multiply: (attention_weights @ xv)
         # Output: [batch_size, num_heads, query_length, head_dim]
         attention_output = jnp.einsum("...hqk,...khd->...hqd", attention_weights, xv, precision=self.precision)
-        
+
         # Merge attention heads
         # [batch_size, num_heads, seq_len, head_dim] -> [batch_size, seq_len, num_heads * head_dim]
         attention_output = self._merge_heads(attention_output)
-        
+
         # Project back to embedding dimension and apply dropout
         # [batch_size, seq_len, num_heads * head_dim] -> [batch_size, seq_len, embedding_size]
         attention_output = self.wo(attention_output)
@@ -581,15 +572,15 @@ class LLaMAMLP(nn.Module):
     def __call__(self, x: jnp.ndarray, deterministic: bool = True) -> jnp.ndarray:
         """
         Implements the SwiGLU activation function (Swish-Gated Linear Unit).
-        
+
         Mathematical formula:
-        SwiGLU(x) = (W₂ ⊙ (SiLU(W₁x) ⊙ W₃x)) 
+        SwiGLU(x) = (W₂ ⊙ (SiLU(W₁x) ⊙ W₃x))
         where:
         - W₁, W₃: project from hidden_size -> intermediate_size
         - W₂: projects from intermediate_size -> hidden_size
         - SiLU(x) = x * sigmoid(x)
         - ⊙ represents element-wise multiplication
-        
+
         Shapes:
         x: [batch_size, seq_len, hidden_size]
         W₁x: [batch_size, seq_len, intermediate_size]
@@ -599,19 +590,18 @@ class LLaMAMLP(nn.Module):
         # Gate path: SiLU(W₁x)
         # [batch_size, seq_len, hidden_size] -> [batch_size, seq_len, intermediate_size]
         gate = nn.silu(self.w1(x))
-        
+
         # Linear path: W₃x
         # [batch_size, seq_len, hidden_size] -> [batch_size, seq_len, intermediate_size]
         linear = self.w3(x)
-        
+
         # Combine paths with element-wise multiplication and project back
         # [batch_size, seq_len, hidden_size]
         x = self.w2(gate * linear)
-        
+
         # Apply dropout
         x = self.dropout(x, deterministic=deterministic)
         return x
-
 
 
 class LLaMABlock(nn.Module):
@@ -629,6 +619,7 @@ class LLaMABlock(nn.Module):
         - num_heads = 32
         - head_dim = embedding_size / num_heads = 100
     """
+
     config: LLaMAConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
@@ -636,45 +627,29 @@ class LLaMABlock(nn.Module):
 
     def setup(self):
         # Multi-head self-attention layer
-        self.attention = LLaMAAttention(
-            self.config, 
-            self.dtype, 
-            self.param_dtype, 
-            self.precision
-        )
+        self.attention = LLaMAAttention(self.config, self.dtype, self.param_dtype, self.precision)
 
         # SwiGLU feed-forward network
-        self.feed_forward = LLaMAMLP(
-            self.config, 
-            self.dtype, 
-            self.param_dtype, 
-            self.precision
-        )
+        self.feed_forward = LLaMAMLP(self.config, self.dtype, self.param_dtype, self.precision)
 
         # RMSNorm layers (one before attention, one before FFN)
         self.attention_norm = RMSNorm(
-            self.config.embedding_size,  
-            eps=self.config.rms_norm_eps,
-            dtype=self.dtype,
-            param_dtype=self.param_dtype
+            self.config.embedding_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype
         )
         self.ffn_norm = RMSNorm(
-            self.config.embedding_size, 
-            eps=self.config.rms_norm_eps,
-            dtype=self.dtype,
-            param_dtype=self.param_dtype
+            self.config.embedding_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype
         )
 
     def __call__(
-            self,
-            hidden_states,      # Shape: [batch_size, seq_len, embedding_size]
-                               # embedding_size = 2048 for 1B, 3200 for 3B
-            attention_mask,     # Shape: [batch_size, seq_len]
-                               # Boolean mask: 1 for valid tokens, 0 for padding
-            position_ids,       # Shape: [batch_size, seq_len]
-                               # Integer positions for rotary embeddings
-            deterministic: bool = True,
-            output_attentions: bool = False,
+        self,
+        hidden_states,  # Shape: [batch_size, seq_len, embedding_size]
+        # embedding_size = 2048 for 1B, 3200 for 3B
+        attention_mask,  # Shape: [batch_size, seq_len]
+        # Boolean mask: 1 for valid tokens, 0 for padding
+        position_ids,  # Shape: [batch_size, seq_len]
+        # Integer positions for rotary embeddings
+        deterministic: bool = True,
+        output_attentions: bool = False,
     ):
         """
         Process input through one transformer block.
@@ -705,7 +680,7 @@ class LLaMABlock(nn.Module):
         # Apply RMSNorm pre-normalization
         # Shape maintained: [batch_size, seq_len, embedding_size]
         normed_hidden_states = self.attention_norm(hidden_states)
-        
+
         # Apply multi-head attention
         # Returns tuple of:
         # - attention_output: [batch_size, seq_len, embedding_size]
@@ -717,10 +692,10 @@ class LLaMABlock(nn.Module):
             deterministic,
             output_attentions,
         )
-        
+
         # Extract attention output from tuple
         attention_hidden_states = attention_output[0]
-        
+
         # Add residual connection
         # Shape maintained: [batch_size, seq_len, embedding_size]
         hidden_states = hidden_states + attention_hidden_states
@@ -729,18 +704,18 @@ class LLaMABlock(nn.Module):
         # Apply RMSNorm pre-normalization
         # Shape maintained: [batch_size, seq_len, embedding_size]
         normed_hidden_states = self.ffn_norm(hidden_states)
-        
+
         # Apply SwiGLU feed-forward network
         # Shape maintained: [batch_size, seq_len, embedding_size]
         feed_forward_hidden_states = self.feed_forward(
             normed_hidden_states,
             deterministic,
         )
-        
+
         # Add residual connection
         # Final shape: [batch_size, seq_len, embedding_size]
         hidden_states = hidden_states + feed_forward_hidden_states
-        
+
         # Return hidden states and optionally attention weights
         if output_attentions:
             return (hidden_states, attention_output[1])
@@ -755,6 +730,7 @@ class LLaMABlockCollection(nn.Module):
     - 3B model: 32 layers
     Each layer contains self-attention and feed-forward components.
     """
+
     config: LLaMAConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
@@ -763,7 +739,7 @@ class LLaMABlockCollection(nn.Module):
     def setup(self):
         # Create a template block with shared configuration
         llama_block = LLaMABlock(self.config, self.dtype, self.param_dtype, self.precision)
-        
+
         # Gradient checkpointing for memory efficiency
         if self.config.gradient_checkpointing:
             raise NotImplementedError("Gradient checkpointing is not implemented for LLaMABlockCollection")
@@ -781,9 +757,9 @@ class LLaMABlockCollection(nn.Module):
 
     def __call__(
         self,
-        hidden_states,      # Shape: [batch_size, seq_len, embedding_size]
-        attention_mask,     # Shape: [batch_size, seq_len]
-        position_ids,       # Shape: [batch_size, seq_len]
+        hidden_states,  # Shape: [batch_size, seq_len, embedding_size]
+        attention_mask,  # Shape: [batch_size, seq_len]
+        position_ids,  # Shape: [batch_size, seq_len]
         deterministic: bool = True,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
@@ -791,7 +767,7 @@ class LLaMABlockCollection(nn.Module):
         # Initialize collectors for intermediate outputs if requested
         # [(batch_size, seq_len, embedding_size)] * (num_layers + 1)
         all_hidden_states = () if output_hidden_states else None
-        
+
         # all_attentions will contain attention weights from each layer:
         # [(batch_size, num_heads, seq_len, seq_len)] * num_layers
         all_attentions = () if output_attentions else None
@@ -837,6 +813,7 @@ class LLaMAModule(nn.Module):
     - 1B: embedding_size=2048, n_layers=22, n_heads=32
     - 3B: embedding_size=3200, n_layers=32, n_heads=32
     """
+
     config: LLaMAConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
@@ -877,9 +854,9 @@ class LLaMAModule(nn.Module):
 
     def __call__(
         self,
-        input_ids,          # [batch_size, seq_len] - Input token IDs
-        attention_mask,     # [batch_size, seq_len] - Mask for padding tokens
-        position_ids,       # [batch_size, seq_len] - Position IDs for RoPE
+        input_ids,  # [batch_size, seq_len] - Input token IDs
+        attention_mask,  # [batch_size, seq_len] - Mask for padding tokens
+        position_ids,  # [batch_size, seq_len] - Position IDs for RoPE
         deterministic: bool = True,
         init_cache: bool = False,
         output_attentions: bool = False,
@@ -889,7 +866,7 @@ class LLaMAModule(nn.Module):
         # 1. Convert input tokens to embeddings
         # [batch_size, seq_len] -> [batch_size, seq_len, embedding_size]
         input_embeddings = self.wte(input_ids.astype("i4"))
-        
+
         # 2. Apply embedding dropout
         hidden_states = self.dropout(input_embeddings, deterministic=deterministic)
 
@@ -919,32 +896,34 @@ class LLaMAModule(nn.Module):
             outputs = (hidden_states, all_hidden_states) + outputs[2:]
         else:
             outputs = (hidden_states,) + outputs[1:]
-        
+
         # 6. Return structured output
         return BaseModelOutput(
             last_hidden_state=hidden_states,  # Final layer output
-            hidden_states=outputs[1],         # All layer outputs (optional)
-            attentions=outputs[-1]           # Attention weights (optional)
+            hidden_states=outputs[1],  # All layer outputs (optional)
+            attentions=outputs[-1],  # Attention weights (optional)
         )
+
 
 class LLaMAForCausalLM(LLaMAPreTrainedModel):
     """
     LLaMA model with a language modeling head.
     Adds a linear layer on top of the transformer to predict next token probabilities.
-    
+
     Key architectural details for 1B/3B:
     1B model:
     - embedding_size = 2048
     - n_layers = 22
     - n_heads = 32
     - vocab_size = 32000
-    
+
     3B model:
     - embedding_size = 3200
     - n_layers = 32
     - n_heads = 32
     - vocab_size = 32000
     """
+
     config: LLaMAConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
@@ -980,7 +959,7 @@ class LLaMAForCausalLM(LLaMAPreTrainedModel):
             extended_attention_mask = lax.dynamic_update_slice(extended_attention_mask, attention_mask, (0, 0))
         else:
             position_ids = jnp.broadcast_to(jnp.arange(seq_len, dtype="i4")[None, :], (batch_size, seq_len))
-        
+
         return {
             "past_key_values": past_key_values,
             "attention_mask": extended_attention_mask,
@@ -991,7 +970,6 @@ class LLaMAForCausalLM(LLaMAPreTrainedModel):
         model_kwargs["past_key_values"] = model_outputs.past_key_values
         model_kwargs["position_ids"] = model_outputs["position_ids"][:, -1] + 1
         return model_kwargs
-
 
     def __call__(
         self,
@@ -1031,7 +1009,7 @@ class LLaMAForCausalLM(LLaMAPreTrainedModel):
 
         # 3. Return structured output
         return CausalLMOutput(
-            logits=lm_logits,           # Token probabilities
+            logits=lm_logits,  # Token probabilities
             hidden_states=outputs.hidden_states,  # Optional layer outputs
-            attentions=outputs.attentions,      # Optional attention weights
+            attentions=outputs.attentions,  # Optional attention weights
         )
