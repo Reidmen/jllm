@@ -1,3 +1,9 @@
+"""
+Implementation of the Llama3 architecture.
+
+Expected to be used with the configuration class `Llama3Config`.
+"""
+
 from typing import Optional
 
 import flax.linen as nn
@@ -98,35 +104,33 @@ def apply_rotary_embedding(xq: jnp.ndarray, xk: jnp.ndarray, freqs_cis: jnp.ndar
     return xq_out.astype(xq.dtype), xk_out.astype(xk.dtype)
 
 
-class LLaMAConfig(PretrainedConfig):
+class LlamaConfig(PretrainedConfig):
     r"""
-    Configuration class for LLaMA model architecture and hyperparameters.
+    Configuration class for Llama3 model architecture and hyperparameters.
 
     Following the LLaMA paper (Touvron et al., 2023) and official PyTorch implementation:
     - embedding_size (called 'dim' in paper) determines model size (e.g., 4096 for 7B model)
     - intermediate_size is typically set to 2.67 * embedding_size
     - num_attention_heads should divide embedding_size evenly (head_dim = embedding_size / num_heads)
 
-    Standard LLaMA configurations:
-    - 7B:   dim=4096,  n_layers=32, n_heads=32,  n_kv_heads=32
-    - 13B:  dim=5120,  n_layers=40, n_heads=40,  n_kv_heads=40
-    - 30B:  dim=6656,  n_layers=60, n_heads=52,  n_kv_heads=52
-    - 65B:  dim=8192,  n_layers=80, n_heads=64,  n_kv_heads=64
-    - 70B:  dim=8192,  n_layers=80, n_heads=64,  n_kv_heads=8 (uses GQA)
+    # NOTE: double check the configs
+    Standard Llama3 configurations:
+    - 1B: embedding_size=2048, num_hidden_layers=16, num_attention_heads=32
+    - 3B: embedding_size=3200, num_hidden_layers=32, num_attention_heads=32
 
     Args:
-        vocab_size (int, default=32000):
-            Size of the tokenizer vocabulary. Default matches official LLaMA tokenizer.
+        vocab_size (int, default=128256):
+            Size of the tokenizer vocabulary. Default matches official Llama3 tokenizer.
 
         embedding_size (int, default=4096):
             Hidden size of the model (called 'dim' in LLaMA paper).
             Determines size of embeddings and hidden layers.
 
-        intermediate_size (int, default=11008):
+        intermediate_size (int, default=8192):
             Size of the MLP's hidden layer. Default is ~2.67 * embedding_size,
             following the scaling rule from the paper.
 
-        num_hidden_layers (int, default=32):
+        num_hidden_layers (int, default=16):
             Number of transformer layers (called 'n_layers' in paper).
 
         num_attention_heads (int, default=32):
@@ -140,7 +144,6 @@ class LLaMAConfig(PretrainedConfig):
 
         max_sequence_length (int, default=2048):
             Maximum sequence length for position embeddings (RoPE).
-            Original LLaMA uses 2048, LLaMA-2 extends this to 4096.
 
         rms_norm_eps (float, default=1e-6):
             Epsilon for RMSNorm layers, for numerical stability.
@@ -171,7 +174,7 @@ class LLaMAConfig(PretrainedConfig):
             Base period for rotary position embeddings.
     """
 
-    model_type: str = "llama"
+    model_type: str = "llama3"
 
     def __init__(
         self,
@@ -233,18 +236,18 @@ class LLaMAConfig(PretrainedConfig):
         )
 
 
-class LLaMAPreTrainedModel(FlaxPreTrainedModel):
+class LlamaPreTrainedModel(FlaxPreTrainedModel):
     """
     Abstrat class to handle the weights initialization and interfacing of models.
     """
 
-    config_class = LLaMAConfig
+    config_class = LlamaConfig
     base_model_prefix = "transformer"
     module_class: Optional[nn.Module] = None
 
     def __init__(
         self,
-        config: LLaMAConfig,
+        config: LlamaConfig,
         input_shape: tuple = (1, 1),
         seed: int = 0,
         dtype: jnp.dtype = jnp.float32,
@@ -315,14 +318,23 @@ class RMSNorm(nn.Module):
         return output * weights
 
 
-class LLaMAAttention(nn.Module):
-    config: LLaMAConfig
+class GroupQueryAttention(nn.Module):
+    config: LlamaConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
 
     def setup(self):
         config = self.config
+        if config.embedding_size % config.num_attention_heads != 0:
+            raise ValueError(
+                f"embedding_size must be divisible by num_attention_heads, but got {config.embedding_size} and {config.num_attention_heads}"
+            )
+        if config.embedding_size % config.num_key_value_heads != 0:
+            raise ValueError(
+                f"embedding_size must be divisible by num_key_value_heads, but got {config.embedding_size} and {config.num_key_value_heads}"
+            )
+
         self.embed_dim = config.embedding_size
         self.num_heads = config.num_attention_heads
         self.head_dim = config.embed_dim // self.num_heads
@@ -497,13 +509,13 @@ class LLaMAAttention(nn.Module):
 
         # Compute scaled dot-product attention weights
         # Q @ K^T / sqrt(head_dim), then add bias and apply softmax
-        # xq: [batch_size, seq_len, num_heads, head_dim]
-        # xk: [batch_size, seq_len, num_heads, head_dim]
+        # NOTE. xq, xk are transposed to match the shape of the attention weights
+        # [batch_size, seq_len, num_heads, head_dim] -> [batch_size, num_heads, seq_len, head_dim]
         # bias: [batch_size, 1, query_length, key_length]
         # Output: [batch_size, num_heads, query_length, key_length]
         attention_weights = dot_product_attention_weights(
-            xq,
-            xk,
+            xq.transpose(0, 2, 1, 3),
+            xk.transpose(0, 2, 1, 3),
             bias=attention_bias,
             dropout_rng=dropout_rng,
             dropout_rate=self.config.attention_dropout,
@@ -514,14 +526,20 @@ class LLaMAAttention(nn.Module):
 
         # Apply attention weights to values
         # attention_weights: [batch_size, num_heads, query_length, key_length]
-        # xv:               [batch_size, seq_len, num_heads, head_dim]
+        # NOTE: xv is transposed along the head_dim and the seq_len dimension
+        # xv: [batch_size, seq_len, num_heads, head_dim] -> [batch_size, num_heads, seq_len, head_dim]
         # Matrix multiply: (attention_weights @ xv)
         # Output: [batch_size, num_heads, query_length, head_dim]
-        attention_output = jnp.einsum("...hqk,...khd->...hqd", attention_weights, xv, precision=self.precision)
+        attention_output = jnp.einsum(
+            "...hqk,...hkd->...hqd",
+            attention_weights,
+            xv.transpose(0, 2, 1, 3),
+            precision=self.precision,
+        )
 
         # Merge attention heads
         # [batch_size, num_heads, seq_len, head_dim] -> [batch_size, seq_len, num_heads * head_dim]
-        attention_output = self._merge_heads(attention_output)
+        attention_output = self._merge_heads(attention_output.transpose(0, 2, 1, 3))
 
         # Project back to embedding dimension and apply dropout
         # [batch_size, seq_len, num_heads * head_dim] -> [batch_size, seq_len, embedding_size]
@@ -533,8 +551,8 @@ class LLaMAAttention(nn.Module):
         return outputs
 
 
-class LLaMAMLP(nn.Module):
-    config: LLaMAConfig
+class LlamaMLP(nn.Module):
+    config: LlamaConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
@@ -604,7 +622,7 @@ class LLaMAMLP(nn.Module):
         return x
 
 
-class LLaMABlock(nn.Module):
+class LlamaBlock(nn.Module):
     """
     Single transformer block for LLaMA architecture implementing pre-normalization design:
     RMSNorm -> Attention -> Residual -> RMSNorm -> FFN -> Residual
@@ -620,17 +638,17 @@ class LLaMABlock(nn.Module):
         - head_dim = embedding_size / num_heads = 100
     """
 
-    config: LLaMAConfig
+    config: LlamaConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
 
     def setup(self):
         # Multi-head self-attention layer
-        self.attention = LLaMAAttention(self.config, self.dtype, self.param_dtype, self.precision)
+        self.attention = GroupQueryAttention(self.config, self.dtype, self.param_dtype, self.precision)
 
         # SwiGLU feed-forward network
-        self.feed_forward = LLaMAMLP(self.config, self.dtype, self.param_dtype, self.precision)
+        self.feed_forward = LlamaMLP(self.config, self.dtype, self.param_dtype, self.precision)
 
         # RMSNorm layers (one before attention, one before FFN)
         self.attention_norm = RMSNorm(
@@ -722,7 +740,7 @@ class LLaMABlock(nn.Module):
         return hidden_states
 
 
-class LLaMABlockCollection(nn.Module):
+class LlamaBlockCollection(nn.Module):
     """
     Collection of LLaMA transformer blocks that processes the input sequence through multiple layers.
     For different model sizes:
@@ -731,14 +749,14 @@ class LLaMABlockCollection(nn.Module):
     Each layer contains self-attention and feed-forward components.
     """
 
-    config: LLaMAConfig
+    config: LlamaConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
 
     def setup(self):
         # Create a template block with shared configuration
-        llama_block = LLaMABlock(self.config, self.dtype, self.param_dtype, self.precision)
+        llama_block = LlamaBlock(self.config, self.dtype, self.param_dtype, self.precision)
 
         # Gradient checkpointing for memory efficiency
         if self.config.gradient_checkpointing:
@@ -806,15 +824,12 @@ class LLaMABlockCollection(nn.Module):
         return outputs
 
 
-class LLaMAModule(nn.Module):
+class Llama3Module(nn.Module):
     """
-    Core LLaMA model implementing the transformer architecture.
-    For LLaMA 1B/3B configurations:
-    - 1B: embedding_size=2048, n_layers=22, n_heads=32
-    - 3B: embedding_size=3200, n_layers=32, n_heads=32
+    Core Llama3 model implementing the transformer architecture.
     """
 
-    config: LLaMAConfig
+    config: LlamaConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
@@ -837,7 +852,7 @@ class LLaMAModule(nn.Module):
         self.dropout = nn.Dropout(rate=self.config.dropout)
 
         # Main transformer blocks
-        self.llama_block_collection = LLaMABlockCollection(
+        self.llama_block_collection = LlamaBlockCollection(
             self.config,
             dtype=self.dtype,
             param_dtype=self.param_dtype,
@@ -905,7 +920,7 @@ class LLaMAModule(nn.Module):
         )
 
 
-class LLaMAForCausalLM(LLaMAPreTrainedModel):
+class Llama3ForCausalLM(LlamaPreTrainedModel):
     """
     LLaMA model with a language modeling head.
     Adds a linear layer on top of the transformer to predict next token probabilities.
@@ -924,14 +939,14 @@ class LLaMAForCausalLM(LLaMAPreTrainedModel):
     - vocab_size = 32000
     """
 
-    config: LLaMAConfig
+    config: LlamaConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
 
     def setup(self):
         # Core transformer model
-        self.llama_module = LLaMAModule(self.config, dtype=self.dtype)
+        self.llama_module = Llama3Module(self.config, dtype=self.dtype)
 
         # Language modeling head
         # Projects hidden states to vocabulary distribution

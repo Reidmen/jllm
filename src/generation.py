@@ -10,7 +10,7 @@ from flax import struct
 from jax.sharding import Mesh
 from jaxtyping import Pytree
 
-from .model import LLaMAForCausalLM
+from .model import Llama3ForCausalLM
 from .tokenizer import Tokenizer
 
 
@@ -24,7 +24,7 @@ def with_sharding_constraint(x, axis_sharding):
 
 class LLaMA(struct.PyTreeNode):
     params: Pytree
-    model: LLaMAForCausalLM = struct.field(pytree_node=False)
+    model: Llama3ForCausalLM = struct.field(pytree_node=False)
     tokenizer: Tokenizer = struct.field(pytree_node=False)
     mesh: Optional[Mesh] = struct.field(pytree_node=False, default=None)
 
@@ -46,7 +46,7 @@ class LLaMA(struct.PyTreeNode):
             generation_config=GenerationConfig(
                 num_beams=1,
                 do_sample=temperature != 0.0,
-                max_length =max_seq_length + tokens.shape[1],
+                max_length=max_seq_length + tokens.shape[1],
                 pad_token_id=self.tokenizer.pad_id,
                 eos_token_id=self.tokenizer.eos_id,
                 temperature=temperature,
@@ -59,30 +59,32 @@ class LLaMA(struct.PyTreeNode):
         return out_tokens
 
     def generate_from_str(
-            self,
-            prompt: list[str],
-            max_gen_length: int,
-            temperature: float = 0.7,
-            top_p: float = 0.95,
+        self,
+        prompt: list[str],
+        max_gen_length: int,
+        temperature: float = 0.7,
+        top_p: float = 0.95,
     ) -> list[str]:
         prompt_tokens = [self.tokenizer.encode(x, bos=True, eos=False) for x in prompt]
         max_prompt_size = max([len(x) for x in prompt_tokens])
 
         tokens = jnp.full((len(prompt), max_prompt_size), self.tokenizer.eos_id).astype(jnp.int32)
         for i, t in enumerate(prompt_tokens):
-            tokens = tokens.at[i, -len(t):].set(t) # left padding
+            tokens = tokens.at[i, -len(t) :].set(t)  # left padding
             attention_mask = (tokens != self.tokenizer.eos_id).astype(jnp.int32)
 
-        out_tokens = self.generate(tokens, attention_mask=attention_mask, max_seq_length=max_gen_length, temperature=temperature, top_p=top_p)
+        out_tokens = self.generate(
+            tokens, attention_mask=attention_mask, max_seq_length=max_gen_length, temperature=temperature, top_p=top_p
+        )
 
         decoded = []
         for i, t in enumerate(out_tokens.tolist()):
             # remove the max_gen_length padding
-            t = t[t.index(self.tokenizer.bos_id):]
-            t = t[:(len(prompt_tokens[i]) + max_gen_length)]
+            t = t[t.index(self.tokenizer.bos_id) :]
+            t = t[: (len(prompt_tokens[i]) + max_gen_length)]
             # cut the eos_id if exist
             try:
-                t = t[:t.index(self.tokenizer.eos_id)]
+                t = t[: t.index(self.tokenizer.eos_id)]
             except ValueError:
                 pass
             decoded.append(self.tokenizer.decode(t))
