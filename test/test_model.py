@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from flax.core import freeze
 import numpy
-from ..src.model import GroupQueryAttention, LlamaConfig
+from ..src.model import GroupQueryAttention, LlamaConfig, _compute_freqs_cis, apply_rotary_embedding
 from ..src.model import RMSNorm
 import torch
 
@@ -47,6 +47,39 @@ class ModelArgs:
             max_batch_size=self.max_batch_size,
         )
 
+def test_rotary_embedding(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
+    """Test rotary embedding using its conjugate"""
+    head_dim = args.embed_dim // args.num_heads
+
+    # Generate samples
+    batch_size = 2
+    seq_len = 4
+    num_heads = args.num_heads
+
+    # Create query, key vectors
+    rng = numpy.random.RandomState(0)
+    query = rng.randn(batch_size, seq_len, num_heads, head_dim).astype(numpy.float32)
+    key = rng.randn(batch_size, seq_len, num_heads, head_dim).astype(numpy.float32)
+
+    # Compute rotation frequencies
+    freq_cis = _compute_freqs_cis(head_dim=head_dim, max_len=seq_len, theta=args.rope_theta)
+    # Apply RoPE rotation to queries and keys
+    rotated_q, rotated_k = apply_rotary_embedding(xq=jnp.asarray(query), xk=jnp.asarray(key), freqs_cis=freq_cis)
+
+    # Assert same shape as input
+    assert rotated_q.shape == query.shape
+    assert rotated_k.shape == key.shape
+
+    # Assert that the rotation is not the same as the input
+    assert not numpy.allclose(query, rotated_q)
+    assert not numpy.allclose(key, rotated_k)
+
+    # Verify rotation is reversible up to some error
+    freq_cis_inv = jnp.conj(freq_cis)
+    restored_q, restored_k = apply_rotary_embedding(xq=rotated_q, xk=rotated_k, freqs_cis=freq_cis_inv)
+    numpy.testing.assert_allclose(query, restored_q, atol=atol)
+    numpy.testing.assert_allclose(key, restored_k, atol=atol)
+
 
 class TorchRMSNorm(torch.nn.Module):
     """PyTorch implementation of RMSNorm for testing."""
@@ -83,7 +116,6 @@ def test_RMSNorm(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
 
     # Compare outputs
     numpy.testing.assert_allclose(jax_output, torch_output, atol=atol)
-
 
 class TorchGroupQueryAttention(torch.nn.Module):
     """PyTorch implementation of GroupQueryAttention for testing."""
