@@ -21,13 +21,15 @@ from .tokenizer import Tokenizer
 @dataclass
 class PartitionRule:
     """Rule for parameter partitioning.
-    
+
     Attributes:
         pattern: Tuple of regex patterns to match parameter path components
         spec: PartitionSpec to apply for matching parameters
     """
+
     pattern: tuple[str]
     spec: PartitionSpec
+
 
 def create_parameter_rules() -> list[PartitionRule]:
     """Create default partitioning rules for LLaMA-3 parameters."""
@@ -44,46 +46,48 @@ def create_parameter_rules() -> list[PartitionRule]:
         PartitionRule(("lm_head", "kernel"), PartitionSpec("dp", "mp")),
     ]
 
+
 def match_parameter_path(path: tuple[str], pattern: tuple[str]) -> bool:
     """Check if a parameter path matches a pattern.
-    
+
     Args:
         path: Tuple of strings representing parameter path components
         pattern: Tuple of regex patterns to match against path
-    
+
     Returns:
         True if pattern matches a window of the path, False otherwise
     """
     if len(pattern) > len(path):
         return False
-    
+
     patterns = [re.compile(f"{p}$") for p in pattern]
-    
+
     for i in range(len(path) - len(pattern) + 1):
         if all(p.match(k) for p, k in zip(patterns, path[i:])):
             return True
     return False
+
 
 def get_partition_specs(
     params: dict,
     rules: list[PartitionRule],
 ) -> dict[str, PartitionSpec]:
     """Generate partition specifications for model parameters.
-    
+
     Args:
         params: Model parameter dictionary
         rules: List of partitioning rules to apply
-    
+
     Returns:
         Dictionary mapping parameter paths to their PartitionSpecs
-    
+
     Raises:
         ValueError: If any parameter doesn't match any rule
     """
     # Flatten parameter dictionary
     flat_params = flatten_dict(params)
     specs: dict[str, PartitionSpec] = {}
-    
+
     # Apply rules to each parameter
     for param_path in flat_params.keys():
         for rule in rules:
@@ -92,21 +96,23 @@ def get_partition_specs(
                 break
         else:
             raise ValueError(f"No partition rule matched parameter: {param_path}")
-    
+
     return specs
 
-def get_llama3_parameter_partition_spec(params): 
+
+def get_llama3_parameter_partition_spec(params):
     """Generate partition specifications for LLaMA-3 model parameters.
-    
+
     Args:
         params: Model parameters
-    
+
     Returns:
         Frozen dictionary with partition specifications for all parameters
     """
     rules = create_parameter_rules()
     specs = get_partition_specs(params, rules)
     return freeze(unflatten_dict(specs))
+
 
 def with_sharding_constraint(x, axis_sharding):
     """Wrapper for pjit with sharding constraint, no-op on cpu or outside the pjit"""
