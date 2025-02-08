@@ -110,6 +110,55 @@ def reference_multihead_attention(xq, xk, xv, lengths, *, mask_value: float = -f
     )(xq, xk, xv, lengths)
 
 
+def reference_group_query_attention(xq, xk, xv, lengths, *, mask_value: float = -float("inf")):
+    """
+    Reference implementation of group query attention.
+
+    Args:
+        xq: Query jax.Array [batch_size, num_heads, head_dim]
+        xk: Key jax.Array [batch_size, num_kv_heads, max_seq_len, head_dim]
+        xv: Value jax.Array [batch_size, num_kv_heads, max_seq_len, head_dim]
+        lengths: jax.Array i32 [batch_size]
+        mask_value: Value used for padding the attention. Default is -inf.
+
+    Returns:
+        attention_output: jax.Array [batch_size, num_heads, head_dim]
+        max_logit: jax.Array [batch_size, num_heads, 1]
+        softmax_denominator: jax.Array [batch_size, num_heads, 1]
+    """
+    batch_size, num_heads, head_dim = xq.shape
+    _, num_kv_heads, seq_len, _ = xk.shape
+    assert xk.shape == xv.shape
+    assert num_heads % num_kv_heads == 0
+
+    # [batch_size, num_kv_heads, num_heads // num_kv_heads, head_dim]
+    # NOTE: num_groups = num_heads // num_kv_heads
+    xq = xq.reshape(batch_size, num_kv_heads, num_heads // num_kv_heads, head_dim)
+
+    # Compute logits and create attention mask
+    # [batch_size, num_kv_heads, num_groups, seq_len]
+    logits = jnp.einsum("bhgd,bhtd->bhgt", xq, xk)
+    mask = jnp.arange(seq_len)[None] < lengths[:, None]
+    logits = logits + jnp.where(mask, 0.0, mask_value)[:, None, None, :]
+
+    logits_max = logits.max(axis=-1)
+    unnormalized_attention = jnp.exp(logits - logits_max[..., None])
+    denominator = unnormalized_attention.sum(axis=-1)
+    # unnormalized_attention: [batch_size, num_kv_heads, num_groups, seq_len]:
+    # xv: [batch_size, num_kv_heads, seq_len, head_dim]
+    # output: [batch_size, num_kv_heads, num_groups, head_dim]
+    output = jnp.einsum("bhgt,bhtd->bhgd", unnormalized_attention, xv) / denominator[..., None]
+
+    # reshape logits_max, denominator and output 
+    # [batch_size, num_kv_heads, num_groups] -> [batch_size, num_heads]
+    # NOTE: num_heads = num_kv_heads * num_groups
+    logits_max = logits_max.reshape(batch_size, 1, num_heads, 1)
+    denominator = denominator.reshape(batch_size, 1, num_heads, 1)
+    output = output.reshape(batch_size, 1, num_heads, head_dim)
+
+    return output, logits_max, denominator
+
+
 def flash_attention_kernel(lengths, q_ref, k_ref, v_ref, o_ref, m_ref, l_ref, *, block_size: int, mask_value: float):
     """Pallas flash attention kernel."""
     # get batch index and block index from program id
@@ -259,5 +308,62 @@ def ragged_multihead_attention(xq, xk, xv, lengths, *, block_size: int = 256, ma
     # m, l: [batch_size, num_heads] -> [batch_size, 1, num_heads]
     m = jnp.expand_dims(m, axis=1)
     l = jnp.expand_dims(l, axis=1)
+
+    return out, m, l
+
+
+def ragged_group_query_attention(xq, xk, xv, lengths, *, block_size: int = 256, mask_value: float = -float("inf")):
+    """Ragged group query attention.
+    
+    Args:
+        xq: Query jax.Array [batch_size, num_heads, head_dim]
+        xk: Key jax.Array [batch_size, seq_len, num_kv_heads, head_dim]
+        xv: Value jax.Array [batch_size, seq_len, num_kv_heads, head_dim]
+        lengths: jax.Array i32 [batch_size]
+        block_size: int defining the Pallas block length in the seq_len dimension
+        mask_value: float value for padding
+
+    Returns:
+        attention_output: jax.Array [batch_size, num_heads, head_dim]
+        max_logit: jax.Array [batch_size, num_heads, 1]
+        softmax_denominator: jax.Array [batch_size, num_heads, 1]
+    """
+    shaped_dtypes = [xq, xk, xv, lengths]
+    cost_estimate = get_mha_cost_estimate(shaped_dtypes)
+
+    batch_size, num_heads, head_dim = xq.shape
+    _, _, num_kv_heads, _ = xk.shape
+
+    xq = xq.reshape(batch_size, num_kv_heads, num_heads // num_kv_heads, head_dim)
+    xk = jnp.swapaxes(xk, 1, 2)
+    xv = jnp.swapaxes(xv, 1, 2)
+
+    # vmap over the num_kv_heads axis, and output on the num_kv_heads axis
+    # NOTE: num_groups = num_heads // num_kv_heads
+    # For each kv_head i:
+    # xq[i]: [batch_size, num_groups, head_dim]
+    # xk[i]: [batch_size, seq_len, head_dim]
+    # xv[i]: [batch_size, seq_len, head_dim]
+    # lengths[i]: [batch_size] (shared across kv_heads)
+    # out[i]: [batch_size, num_groups, head_dim]
+    # After vmap, out: [batch_size, num_kv_heads, num_groups, head_dim]
+    out, m, l = jax.vmap(
+        partial(
+            ragged_multiquery_attention,
+            block_size=block_size,
+            mask_value=mask_value,
+            cost_estimate=cost_estimate,
+        ),
+        in_axes=(1, 1, 1, None), # split on the kv_head axis
+        out_axes=1, # stack on the kv_head axis
+    )(xq, xk, xv, lengths)
+
+    # Reshape the outputs to original num_heads dimension
+    # out: [batch_size, num_kv_heads, num_groups, head_dim] -> [batch_size, 1, num_heads, head_dim]
+    # NOTE: num_heads = num_kv_heads * num_groups
+    m = jnp.reshape(m, (batch_size, 1, num_heads, 1))
+    l = jnp.reshape(l, (batch_size, 1, num_heads, 1))
+    out = jnp.reshape(out, (batch_size, 1, num_heads, head_dim))
+    out = out * l
 
     return out, m, l
