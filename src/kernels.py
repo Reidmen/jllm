@@ -149,7 +149,7 @@ def reference_group_query_attention(xq, xk, xv, lengths, *, mask_value: float = 
     # output: [batch_size, num_kv_heads, num_groups, head_dim]
     output = jnp.einsum("bhgt,bhtd->bhgd", unnormalized_attention, xv) / denominator[..., None]
 
-    # reshape logits_max, denominator and output 
+    # reshape logits_max, denominator and output
     # [batch_size, num_kv_heads, num_groups] -> [batch_size, num_heads]
     # NOTE: num_heads = num_kv_heads * num_groups
     logits_max = logits_max.reshape(batch_size, 1, num_heads, 1)
@@ -314,7 +314,7 @@ def ragged_multihead_attention(xq, xk, xv, lengths, *, block_size: int = 256, ma
 
 def ragged_group_query_attention(xq, xk, xv, lengths, *, block_size: int = 256, mask_value: float = -float("inf")):
     """Ragged group query attention.
-    
+
     Args:
         xq: Query jax.Array [batch_size, num_heads, head_dim]
         xk: Key jax.Array [batch_size, seq_len, num_kv_heads, head_dim]
@@ -354,8 +354,8 @@ def ragged_group_query_attention(xq, xk, xv, lengths, *, block_size: int = 256, 
             mask_value=mask_value,
             cost_estimate=cost_estimate,
         ),
-        in_axes=(1, 1, 1, None), # split on the kv_head axis
-        out_axes=1, # stack on the kv_head axis
+        in_axes=(1, 1, 1, None),  # split on the kv_head axis
+        out_axes=1,  # stack on the kv_head axis
     )(xq, xk, xv, lengths)
 
     # Reshape the outputs to original num_heads dimension

@@ -13,8 +13,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from src.kernels import (
+    ragged_group_query_attention,
     ragged_multiquery_attention,
     ragged_multihead_attention,
+    reference_group_query_attention,
     reference_multiquery_attention,
     reference_multihead_attention,
 )
@@ -80,6 +82,37 @@ class RaggedAttentionTest(unittest.TestCase):
         self.assertTrue(
             jnp.average(abs(ragged_max - reference_max)) < 1e-2,
             f"Ragged MHA and reference MHA average values differ: {jnp.average(abs(ragged_max - reference_max))}",
+        )
+
+    def test_ragged_gqa(self):
+        """Test ragged GQA attention."""
+        xq = jax.random.normal(self.key_1, (self.batch_size, self.num_query_heads, self.head_dim), dtype=self.dtype)
+        xk = jax.random.normal(
+            self.key_2, (self.batch_size, self.max_target_length, self.num_kv_heads, self.head_dim), dtype=self.dtype
+        )
+        xv = jax.random.normal(
+            self.key_3, (self.batch_size, self.max_target_length, self.num_kv_heads, self.head_dim), dtype=self.dtype
+        )
+        lengths = jnp.array(np.random.randint(1, self.max_target_length, self.batch_size), dtype=jnp.int32)
+
+        ragged_out, ragged_max, ragged_denom = ragged_group_query_attention(xq, xk, xv, lengths)
+        ragged_out = ragged_out / ragged_denom
+
+        reference_out, reference_max, _ = reference_group_query_attention(
+            jnp.swapaxes(xq, 1, 2),
+            jnp.swapaxes(xk, 1, 2),
+            jnp.swapaxes(xv, 1, 2),
+            lengths,
+        )
+
+        self.assertTrue(
+            jnp.max(abs(ragged_out - reference_out)) < 1e-2,
+            f"Ragged GQA and reference GQA outputs differ: {jnp.max(abs(ragged_out - reference_out))}",
+        )
+
+        self.assertTrue(
+            jnp.average(abs(ragged_max - reference_max)) < 1e-2,
+            f"Ragged GQA and reference GQA average values differ: {jnp.average(abs(ragged_max - reference_max))}",
         )
 
 
