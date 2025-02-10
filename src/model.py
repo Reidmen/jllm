@@ -271,6 +271,9 @@ class LlamaPreTrainedModel(FlaxPreTrainedModel):
 
 
 class RMSNorm(nn.Module):
+    """
+    Root Mean Square Layer Normalization.
+    """
     dimension: int
     eps: float = 1e-6
     dtype: jnp.dtype = jnp.float32
@@ -552,6 +555,19 @@ class GroupQueryAttention(nn.Module):
 
 
 class LlamaMLP(nn.Module):
+    """
+    Feed-forward network for Llama3.2 model. It implements the SwiGLU activation function.
+
+    For the the 1B model, the architecture is given by:
+    (mlp): LlamaMLP(
+          (gate_proj): Linear(in_features=2048, out_features=8192, bias=False)
+          (up_proj): Linear(in_features=2048, out_features=8192, bias=False)
+          (down_proj): Linear(in_features=8192, out_features=2048, bias=False)
+          (act_fn): SiLU()
+        )
+
+    """
+
     config: LlamaConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
@@ -632,31 +648,12 @@ class LlamaBlock(nn.Module):
         - embedding_size = 2048
         - num_heads = 32
         - head_dim = embedding_size / num_heads = 64
-    LLaMA-3B:
-        - embedding_size = 3200
-        - num_heads = 32
-        - head_dim = embedding_size / num_heads = 100
     """
 
     config: LlamaConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
-
-    def setup(self):
-        # Multi-head self-attention layer
-        self.attention = GroupQueryAttention(self.config, self.dtype, self.param_dtype, self.precision)
-
-        # SwiGLU feed-forward network
-        self.feed_forward = LlamaMLP(self.config, self.dtype, self.param_dtype, self.precision)
-
-        # RMSNorm layers (one before attention, one before FFN)
-        self.attention_norm = RMSNorm(
-            self.config.embedding_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype
-        )
-        self.ffn_norm = RMSNorm(
-            self.config.embedding_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype
-        )
 
     def __call__(
         self,
@@ -670,14 +667,7 @@ class LlamaBlock(nn.Module):
         output_attentions: bool = False,
     ):
         """
-        Process input through one transformer block.
-
-        Example dimensions for batch_size=2, seq_len=10:
-        1. Input hidden_states: [2, 10, 2048]  # for LLaMA-1B
-        2. Apply attention_norm: [2, 10, 2048]
-        3. Self-attention + residual: [2, 10, 2048]
-        4. Apply ffn_norm: [2, 10, 2048]
-        5. Feed-forward + residual: [2, 10, 2048]
+        Process input through one (llama3) transformer block.
 
         Args:
             hidden_states: Input embeddings or previous layer's output
@@ -697,13 +687,13 @@ class LlamaBlock(nn.Module):
         # 1. Self-attention block
         # Apply RMSNorm pre-normalization
         # Shape maintained: [batch_size, seq_len, embedding_size]
-        normed_hidden_states = self.attention_norm(hidden_states)
+        normed_hidden_states = RMSNorm(self.config.embedding_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype)(hidden_states)
 
         # Apply multi-head attention
         # Returns tuple of:
         # - attention_output: [batch_size, seq_len, embedding_size]
         # - attention_weights (optional): [batch_size, num_heads, seq_len, seq_len]
-        attention_output = self.attention(
+        attention_output = GroupQueryAttention(self.config, self.dtype, self.param_dtype, self.precision)(
             normed_hidden_states,
             attention_mask,
             position_ids,
@@ -721,11 +711,11 @@ class LlamaBlock(nn.Module):
         # 2. Feed-forward block
         # Apply RMSNorm pre-normalization
         # Shape maintained: [batch_size, seq_len, embedding_size]
-        normed_hidden_states = self.ffn_norm(hidden_states)
+        normed_hidden_states = RMSNorm(self.config.embedding_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype)(hidden_states)
 
         # Apply SwiGLU feed-forward network
         # Shape maintained: [batch_size, seq_len, embedding_size]
-        feed_forward_hidden_states = self.feed_forward(
+        feed_forward_hidden_states = LlamaMLP(self.config, self.dtype, self.param_dtype, self.precision)(
             normed_hidden_states,
             deterministic,
         )
@@ -740,13 +730,11 @@ class LlamaBlock(nn.Module):
         return hidden_states
 
 
-class LlamaBlockCollection(nn.Module):
+class LlamaDecoderLayer(nn.Module):
     """
-    Collection of LLaMA transformer blocks that processes the input sequence through multiple layers.
-    For different model sizes:
-    - 1B model: 22 layers
-    - 3B model: 32 layers
-    Each layer contains self-attention and feed-forward components.
+    Collection of transformer blocks that processes the input sequence through multiple layers.
+
+    NOTE: Each layer contains self-attention and feed-forward components.
     """
 
     config: LlamaConfig
@@ -755,19 +743,13 @@ class LlamaBlockCollection(nn.Module):
     precision: Optional[jax.lax.Precision] = None
 
     def setup(self):
-        # Create a template block with shared configuration
-        llama_block = LlamaBlock(self.config, self.dtype, self.param_dtype, self.precision)
-
         # Gradient checkpointing for memory efficiency
         if self.config.gradient_checkpointing:
             raise NotImplementedError("Gradient checkpointing is not implemented for LLaMABlockCollection")
 
         # Create list of transformer blocks
-        # num_hidden_layers is:
-        # - 22 for 1B model
-        # - 32 for 3B model
         self.blocks = [
-            llama_block(
+            LlamaBlock(
                 self.config, name=f"block_{i}", dtype=self.dtype, param_dtype=self.param_dtype, precision=self.precision
             )
             for i in range(self.config.num_hidden_layers)
@@ -791,7 +773,7 @@ class LlamaBlockCollection(nn.Module):
         all_attentions = () if output_attentions else None
 
         # Process through each transformer block sequentially
-        for block in self.blocks:
+        for llama_block in self.blocks:
             # Store current hidden states before block transformation if requested
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -800,7 +782,7 @@ class LlamaBlockCollection(nn.Module):
             # Returns tuple of:
             # - hidden_states: [batch_size, seq_len, embedding_size]
             # - attention_weights (optional): [batch_size, num_heads, seq_len, seq_len]
-            layer_outputs = block(
+            layer_outputs = llama_block(
                 hidden_states,
                 attention_mask,
                 position_ids,
@@ -824,9 +806,18 @@ class LlamaBlockCollection(nn.Module):
         return outputs
 
 
-class Llama3Module(nn.Module):
+class Llama3Model(nn.Module):
     """
     Core Llama3 model implementing the transformer architecture.
+    
+    It's architecture is given by:
+      (model): Llama3Model(
+        (embed_tokens): Embedding(128256, 2048)
+        (layers): ModuleList(
+        (0-15): 16 x LlamaDecoderLayer(...)
+        (norm): LlamaRMSNorm()
+        (rotary_emb): LlamaRotaryEmbedding()
+      )
     """
 
     config: LlamaConfig
@@ -835,9 +826,6 @@ class Llama3Module(nn.Module):
     precision: Optional[jax.lax.Precision] = None
 
     def setup(self):
-        # Store embedding dimension from config (2048 for 1B, 3200 for 3B)
-        self.embed_dim = self.config.embedding_size
-
         # Token embedding layer: maps token IDs to embedding vectors
         # Shape: [vocab_size, embedding_size]
         self.wte = nn.Embed(
@@ -852,7 +840,7 @@ class Llama3Module(nn.Module):
         self.dropout = nn.Dropout(rate=self.config.dropout)
 
         # Main transformer blocks
-        self.llama_block_collection = LlamaBlockCollection(
+        self.llama_block_collection = LlamaDecoderLayer(
             self.config,
             dtype=self.dtype,
             param_dtype=self.param_dtype,
@@ -922,21 +910,7 @@ class Llama3Module(nn.Module):
 
 class Llama3ForCausalLM(LlamaPreTrainedModel):
     """
-    LLaMA model with a language modeling head.
-    Adds a linear layer on top of the transformer to predict next token probabilities.
-
-    Key architectural details for 1B/3B:
-    1B model:
-    - embedding_size = 2048
-    - n_layers = 22
-    - n_heads = 32
-    - vocab_size = 32000
-
-    3B model:
-    - embedding_size = 3200
-    - n_layers = 32
-    - n_heads = 32
-    - vocab_size = 32000
+    Llama3 model with a language modeling head.
     """
 
     config: LlamaConfig
@@ -945,9 +919,6 @@ class Llama3ForCausalLM(LlamaPreTrainedModel):
     precision: Optional[jax.lax.Precision] = None
 
     def setup(self):
-        # Core transformer model
-        self.llama_module = Llama3Module(self.config, dtype=self.dtype)
-
         # Language modeling head
         # Projects hidden states to vocabulary distribution
         # Shape: [hidden_size, vocab_size]
@@ -998,7 +969,7 @@ class Llama3ForCausalLM(LlamaPreTrainedModel):
         return_dict: bool = True,
     ):
         # 1. Get transformer outputs
-        outputs = self.llama_module(
+        outputs = Llama3Model(self.config, self.dtype, self.param_dtype, self.precision)(
             input_ids,
             attention_mask,
             position_ids,
@@ -1008,9 +979,12 @@ class Llama3ForCausalLM(LlamaPreTrainedModel):
             return_dict=return_dict,
         )
 
+        # 2. Get hidden states
+        # [batch_size, seq_len, hidden_size]
         hidden_states = outputs[0]
 
-        # 2. Project to vocabulary distribution
+        # 3. Project to vocabulary distribution
+        # [batch_size, seq_len, hidden_size] -> [batch_size, seq_len, vocab_size]
         if self.config.tie_word_embeddings:
             # Reuse input embedding weights for output projection
             shared_kernel = self.llama_module.variables["params"]["wte"]["embedding"].T
@@ -1024,7 +998,7 @@ class Llama3ForCausalLM(LlamaPreTrainedModel):
 
         # 3. Return structured output
         return CausalLMOutput(
-            logits=lm_logits,  # Token probabilities
-            hidden_states=outputs.hidden_states,  # Optional layer outputs
+            logits=lm_logits,  # Token probabilities [batch_size, seq_len, vocab_size]
+            hidden_states=outputs.hidden_states,  # Optional layer outputs [batch_size, seq_len, hidden_size]
             attentions=outputs.attentions,  # Optional attention weights
         )
