@@ -113,10 +113,8 @@ class LlamaConfig(PretrainedConfig):
     - intermediate_size is typically set to 2.67 * embedding_size
     - num_attention_heads should divide embedding_size evenly (head_dim = embedding_size / num_heads)
 
-    # NOTE: double check the configs
-    Standard Llama3 configurations:
-    - 1B: embedding_size=2048, num_hidden_layers=16, num_attention_heads=32
-    - 3B: embedding_size=3200, num_hidden_layers=32, num_attention_heads=32
+    Standard Llama3 1B model:
+    - embedding_size=2048, num_hidden_layers=16, num_attention_heads=32
 
     Args:
         vocab_size (int, default=128256):
@@ -274,6 +272,7 @@ class RMSNorm(nn.Module):
     """
     Root Mean Square Layer Normalization.
     """
+
     dimension: int
     eps: float = 1e-6
     dtype: jnp.dtype = jnp.float32
@@ -687,7 +686,9 @@ class LlamaBlock(nn.Module):
         # 1. Self-attention block
         # Apply RMSNorm pre-normalization
         # Shape maintained: [batch_size, seq_len, embedding_size]
-        normed_hidden_states = RMSNorm(self.config.embedding_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype)(hidden_states)
+        normed_hidden_states = RMSNorm(
+            self.config.embedding_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype
+        )(hidden_states)
 
         # Apply multi-head attention
         # Returns tuple of:
@@ -711,7 +712,9 @@ class LlamaBlock(nn.Module):
         # 2. Feed-forward block
         # Apply RMSNorm pre-normalization
         # Shape maintained: [batch_size, seq_len, embedding_size]
-        normed_hidden_states = RMSNorm(self.config.embedding_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype)(hidden_states)
+        normed_hidden_states = RMSNorm(
+            self.config.embedding_size, eps=self.config.rms_norm_eps, dtype=self.dtype, param_dtype=self.param_dtype
+        )(hidden_states)
 
         # Apply SwiGLU feed-forward network
         # Shape maintained: [batch_size, seq_len, embedding_size]
@@ -809,7 +812,7 @@ class LlamaDecoderLayer(nn.Module):
 class Llama3Model(nn.Module):
     """
     Core Llama3 model implementing the transformer architecture.
-    
+
     It's architecture is given by:
       (model): Llama3Model(
         (embed_tokens): Embedding(128256, 2048)
