@@ -22,9 +22,15 @@ from .tokenizer import Tokenizer
 class PartitionRule:
     """Rule for parameter partitioning.
 
+    The partition uses two strategies:
+    - mp (model parallelism): split parameters across model dimensions (e.g. attention heads)
+    - dp (data parallelism): split parameters across data dimensions (e.g. batch size)
+
     Attributes:
         pattern: Tuple of regex patterns to match parameter path components
-        spec: PartitionSpec to apply for matching parameters
+            e.g. ("transformer", "wte", "embedding")
+        spec: PartitionSpec defining how to split the parameter tensor
+            e.g. PartitionSpec("dp", "mp") splits first dim by data parallelism, second dim by model parallelism
     """
 
     pattern: tuple[str]
@@ -32,17 +38,33 @@ class PartitionRule:
 
 
 def create_parameter_rules() -> list[PartitionRule]:
-    """Create default partitioning rules for LLaMA-3 parameters."""
+    """Create default partitioning rules for LLaMA-3 parameters.
+    
+    Example tensor shapes and partition specs:
+    - embedding: [vocab_size, hidden_size] -> PartitionSpec("mp", "dp")
+        e.g. 4 devices (2 dp, 2 mp) -> 4 pieces of [vocab_size / 2, hidden_size / 2]
+    - attention weights: [num_heads, hidden_size, hidden_size] -> PartitionSpec("dp", "mp")
+    ...
+    """
     return [
-        PartitionRule(("transformer", "wte", "embedding"), PartitionSpec("dp", "mp")),
+        # Embedding layer
+        PartitionRule(("transformer", "wte", "embedding"), PartitionSpec("mp", "dp")),
+
+        # Attention layer
         PartitionRule(("attention", "(wq|wk|wv)", "kernel"), PartitionSpec("dp", "mp")),
-        PartitionRule(("attention", "wo", "kernel"), PartitionSpec("dp", "mp")),
+        PartitionRule(("attention", "wo", "kernel"), PartitionSpec("mp", "dp")),
+
+        # Feed-forward layer
         PartitionRule(("feed_forward", "w1", "kernel"), PartitionSpec("dp", "mp")),
-        PartitionRule(("feed_forward", "w2", "kernel"), PartitionSpec("dp", "mp")),
+        PartitionRule(("feed_forward", "w2", "kernel"), PartitionSpec("mp", "dp")),
         PartitionRule(("feed_forward", "w3", "kernel"), PartitionSpec("dp", "mp")),
+
+        # Layer norm (not partitioned)
         PartitionRule(("attention_norm", "kernel"), PartitionSpec(None)),
         PartitionRule(("ffn_norm", "kernel"), PartitionSpec(None)),
         PartitionRule(("transformer", "ln_f", "kernel"), PartitionSpec(None)),
+
+        # Output layer
         PartitionRule(("lm_head", "kernel"), PartitionSpec("dp", "mp")),
     ]
 
