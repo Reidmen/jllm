@@ -1,7 +1,6 @@
 from typing import Optional
 
 import jax
-import jax.experimental
 import jax.experimental.shard_map
 from jax.sharding import PartitionSpec
 from transformers import GenerationConfig
@@ -13,7 +12,7 @@ from dataclasses import dataclass
 import re
 from flax.core import freeze
 from flax.traverse_util import flatten_dict, unflatten_dict
-
+from functools import partial
 from .model import Llama3ForCausalLM
 from .tokenizer import Tokenizer
 
@@ -150,6 +149,7 @@ class LLaMA(struct.PyTreeNode):
     tokenizer: Tokenizer = struct.field(pytree_node=False)
     mesh: Optional[Mesh] = struct.field(pytree_node=False, default=None)
 
+    @partial(jax.jit, static_argnames=("max_seq_length", "temperature", "top_p"))
     def generate(
         self,
         tokens: jnp.ndarray,

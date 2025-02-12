@@ -13,8 +13,8 @@ import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
 from flax.linen.attention import combine_masks, dot_product_attention_weights, make_causal_mask
 from transformers.configuration_utils import PretrainedConfig
-from transformers.modeling_flax_outputs import BaseModelOutput, CausalLMOutput
 from transformers.modeling_flax_utils import FlaxPreTrainedModel
+from transformers.modeling_flax_outputs import FlaxCausalLMOutput, FlaxBaseModelOutput 
 
 
 def _compute_freqs_cis(
@@ -904,7 +904,7 @@ class Llama3Model(nn.Module):
             outputs = (hidden_states,) + outputs[1:]
 
         # 6. Return structured output
-        return BaseModelOutput(
+        return FlaxBaseModelOutput(
             last_hidden_state=hidden_states,  # Final layer output
             hidden_states=outputs[1],  # All layer outputs (optional)
             attentions=outputs[-1],  # Attention weights (optional)
@@ -920,19 +920,6 @@ class Llama3ForCausalLM(LlamaPreTrainedModel):
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
-
-    def setup(self):
-        # Language modeling head
-        # Projects hidden states to vocabulary distribution
-        # Shape: [hidden_size, vocab_size]
-        self.lm_head = nn.Dense(
-            features=self.config.vocab_size,
-            dtype=self.dtype,
-            param_dtype=self.param_dtype,
-            use_bias=False,
-            kernel_init=jax.nn.initializers.normal(stddev=self.config.initializer_range),
-            precision=self.precision,
-        )
 
     def prepare_inputs_for_generation(
         self,
@@ -987,20 +974,30 @@ class Llama3ForCausalLM(LlamaPreTrainedModel):
         hidden_states = outputs[0]
 
         # 3. Project to vocabulary distribution
+        # Shape: [hidden_size, vocab_size]
+        lm_head = nn.Dense(
+            features=self.config.vocab_size,
+            dtype=self.dtype,
+            param_dtype=self.param_dtype,
+            use_bias=False,
+            kernel_init=jax.nn.initializers.normal(stddev=self.config.initializer_range),
+            precision=self.precision,
+        )
+
         # [batch_size, seq_len, hidden_size] -> [batch_size, seq_len, vocab_size]
         if self.config.tie_word_embeddings:
             # Reuse input embedding weights for output projection
             shared_kernel = self.llama_module.variables["params"]["wte"]["embedding"].T
-            lm_logits = self.lm_head.apply({"params": {"kernel": shared_kernel}}, hidden_states)
+            lm_logits = lm_head.apply({"params": {"kernel": shared_kernel}}, hidden_states)
         else:
             # Use separate output projection weights
-            lm_logits = self.lm_head(hidden_states)
+            lm_logits = lm_head(hidden_states)
 
         if not return_dict:
             return (lm_logits,) + outputs[1:]
 
         # 3. Return structured output
-        return CausalLMOutput(
+        return FlaxCausalLMOutput(
             logits=lm_logits,  # Token probabilities [batch_size, seq_len, vocab_size]
             hidden_states=outputs.hidden_states,  # Optional layer outputs [batch_size, seq_len, hidden_size]
             attentions=outputs.attentions,  # Optional attention weights
