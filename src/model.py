@@ -14,7 +14,7 @@ from flax.core.frozen_dict import FrozenDict
 from flax.linen.attention import combine_masks, dot_product_attention_weights, make_causal_mask
 from transformers.configuration_utils import PretrainedConfig
 from transformers.modeling_flax_utils import FlaxPreTrainedModel
-from transformers.modeling_flax_outputs import FlaxCausalLMOutput, FlaxBaseModelOutput 
+from transformers.modeling_flax_outputs import FlaxCausalLMOutput, FlaxBaseModelOutput
 
 
 def _compute_freqs_cis(
@@ -730,6 +730,7 @@ class LlamaBlock(nn.Module):
         # Return hidden states and optionally attention weights
         if output_attentions:
             return (hidden_states, attention_output[1])
+
         return hidden_states
 
 
@@ -750,14 +751,6 @@ class LlamaDecoderLayer(nn.Module):
         if self.config.gradient_checkpointing:
             raise NotImplementedError("Gradient checkpointing is not implemented for LLaMABlockCollection")
 
-        # Create list of transformer blocks
-        self.blocks = [
-            LlamaBlock(
-                self.config, name=f"block_{i}", dtype=self.dtype, param_dtype=self.param_dtype, precision=self.precision
-            )
-            for i in range(self.config.num_hidden_layers)
-        ]
-
     def __call__(
         self,
         hidden_states,  # Shape: [batch_size, seq_len, embedding_size]
@@ -766,7 +759,7 @@ class LlamaDecoderLayer(nn.Module):
         deterministic: bool = True,
         output_attentions: bool = False,
         output_hidden_states: bool = False,
-    ):
+    ) -> tuple[jnp.ndarray, tuple[jnp.ndarray, ...], tuple[jnp.ndarray, ...]]:
         # Initialize collectors for intermediate outputs if requested
         # [(batch_size, seq_len, embedding_size)] * (num_layers + 1)
         all_hidden_states = () if output_hidden_states else None
@@ -776,7 +769,7 @@ class LlamaDecoderLayer(nn.Module):
         all_attentions = () if output_attentions else None
 
         # Process through each transformer block sequentially
-        for llama_block in self.blocks:
+        for i in range(self.config.num_hidden_layers):
             # Store current hidden states before block transformation if requested
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
@@ -785,7 +778,13 @@ class LlamaDecoderLayer(nn.Module):
             # Returns tuple of:
             # - hidden_states: [batch_size, seq_len, embedding_size]
             # - attention_weights (optional): [batch_size, num_heads, seq_len, seq_len]
-            layer_outputs = llama_block(
+            layer_outputs = LlamaBlock(
+                self.config,
+                name=f"block_{i}",
+                dtype=self.dtype,
+                param_dtype=self.param_dtype,
+                precision=self.precision,
+            )(
                 hidden_states,
                 attention_mask,
                 position_ids,
@@ -828,36 +827,6 @@ class Llama3Model(nn.Module):
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
 
-    def setup(self):
-        # Token embedding layer: maps token IDs to embedding vectors
-        # Shape: [vocab_size, embedding_size]
-        self.wte = nn.Embed(
-            num_embeddings=self.config.vocab_size,
-            features=self.config.embedding_size,
-            embedding_init=jax.nn.initializers.normal(stddev=self.config.initializer_range),
-            dtype=self.dtype,
-            param_dtype=self.param_dtype,
-        )
-
-        # Embedding dropout layer
-        self.dropout = nn.Dropout(rate=self.config.dropout)
-
-        # Main transformer blocks
-        self.llama_block_collection = LlamaDecoderLayer(
-            self.config,
-            dtype=self.dtype,
-            param_dtype=self.param_dtype,
-            precision=self.precision,
-        )
-
-        # Final layer normalization
-        self.rms_norm = RMSNorm(
-            self.config.hidden_size,
-            eps=self.config.rms_norm_eps,
-            dtype=self.dtype,
-            param_dtype=self.param_dtype,
-        )
-
     def __call__(
         self,
         input_ids,  # [batch_size, seq_len] - Input token IDs
@@ -870,18 +839,33 @@ class Llama3Model(nn.Module):
         return_dict: bool = True,
     ):
         # 1. Convert input tokens to embeddings
-        # [batch_size, seq_len] -> [batch_size, seq_len, embedding_size]
-        input_embeddings = self.wte(input_ids.astype("i4"))
+        # Maps input token IDs to embedding vectors
+        # Input Shape: [vocab_size, embedding_size]
+        # When called, outputs Shape: [batch_size, seq_len, embedding_size]
+        input_embeddings = nn.Embed(
+            num_embeddings=self.config.vocab_size,
+            features=self.config.embedding_size,
+            embedding_init=jax.nn.initializers.normal(stddev=self.config.initializer_range),
+            dtype=self.dtype,
+            param_dtype=self.param_dtype,
+        )(input_ids.astype("i4"))
 
         # 2. Apply embedding dropout
-        hidden_states = self.dropout(input_embeddings, deterministic=deterministic)
+        hidden_states = nn.Dropout(rate=self.config.embedding_prob_dropout, deterministic=deterministic)(
+            input_embeddings
+        )
 
         # 3. Process through transformer blocks
         # Returns tuple of:
         # - Final hidden states [batch_size, seq_len, hidden_size]
         # - All layer hidden states (if output_hidden_states=True)
         # - All layer attention weights (if output_attentions=True)
-        outputs = self.llama_block_collection(
+        outputs = LlamaDecoderLayer(
+            self.config,
+            dtype=self.dtype,
+            param_dtype=self.param_dtype,
+            precision=self.precision,
+        )(
             hidden_states,
             attention_mask,
             position_ids,
@@ -893,7 +877,12 @@ class Llama3Model(nn.Module):
         )
 
         # 4. Apply final layer normalization
-        hidden_states = self.rms_norm(outputs[0])
+        hidden_states = RMSNorm(
+            self.config.hidden_size,
+            eps=self.config.rms_norm_eps,
+            dtype=self.dtype,
+            param_dtype=self.param_dtype,
+        )(outputs[0])
 
         # 5. Handle output collection
         if output_hidden_states:

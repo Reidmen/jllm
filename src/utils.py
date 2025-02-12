@@ -14,12 +14,12 @@ import numpy as np
 @dataclass
 class ModelArgs:
     """Hyperparameters for the model.
-    
+
     Args:
         embedding_size: dimension of the token embedding and the hidden layers (aka hidden states)
         num_layers: number of transformer layers
         num_heads: number of attention heads for MHA
-        num_key_value_heads: number of attention heads for GQA 
+        num_key_value_heads: number of attention heads for GQA
         vocab_size: size of the vocabulary
         multiple_of: make swiGLU layers multiple of this (for hardware, typically 256)
         ffn_dimension_multiplier: multiplier for the dimension of the feed-forward network
@@ -49,7 +49,7 @@ def config_from_parameters(args: ModelArgs) -> LlamaConfig:
     (Heuristic) For the FFN (8/3 = 2.67 from PaLM paper). Empirically works well for LLMs.
     """
     # Compute FFN intermediate size
-    intermediate_size = int(args.embedding_size * 8 / 3) # default by PaLM paper
+    intermediate_size = int(args.embedding_size * 8 / 3)  # default by PaLM paper
     if args.ffn_dimension_multiplier is not None:
         intermediate_size = int(args.embedding_size * args.ffn_dimension_multiplier)
 

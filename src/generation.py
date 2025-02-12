@@ -38,7 +38,7 @@ class PartitionRule:
 
 def create_parameter_rules() -> list[PartitionRule]:
     """Create default partitioning rules for LLaMA-3 parameters.
-    
+
     Example tensor shapes and partition specs:
     - embedding: [vocab_size, hidden_size] -> PartitionSpec("mp", "dp")
         e.g. 4 devices (2 dp, 2 mp) -> 4 pieces of [vocab_size / 2, hidden_size / 2]
@@ -48,21 +48,17 @@ def create_parameter_rules() -> list[PartitionRule]:
     return [
         # Embedding layer
         PartitionRule(("transformer", "wte", "embedding"), PartitionSpec("mp", "dp")),
-
         # Attention layer
         PartitionRule(("attention", "(wq|wk|wv)", "kernel"), PartitionSpec("dp", "mp")),
         PartitionRule(("attention", "wo", "kernel"), PartitionSpec("mp", "dp")),
-
         # Feed-forward layer
         PartitionRule(("feed_forward", "w1", "kernel"), PartitionSpec("dp", "mp")),
         PartitionRule(("feed_forward", "w2", "kernel"), PartitionSpec("mp", "dp")),
         PartitionRule(("feed_forward", "w3", "kernel"), PartitionSpec("dp", "mp")),
-
         # Layer norm (not partitioned)
         PartitionRule(("attention_norm", "kernel"), PartitionSpec(None)),
         PartitionRule(("ffn_norm", "kernel"), PartitionSpec(None)),
         PartitionRule(("transformer", "ln_f", "kernel"), PartitionSpec(None)),
-
         # Output layer
         PartitionRule(("lm_head", "kernel"), PartitionSpec("dp", "mp")),
     ]
