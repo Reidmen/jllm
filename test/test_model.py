@@ -1,4 +1,4 @@
-"""Testing the model classes against PyTorch"""
+"""Testing the model classes against jax.numpy naive implementation."""
 
 from dataclasses import dataclass
 from typing import Optional
