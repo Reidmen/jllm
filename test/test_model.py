@@ -98,7 +98,7 @@ def test_RMSNorm(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
 
 
 def test_GroupQueryAttention(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
-    """Test JAX GroupQueryAttention implementation against PyTorch reference."""
+    """Test JAX GroupQueryAttention implementation against jax.numpy reference."""
     # Setup dimensions
     kv_heads = args.num_key_value_heads or args.num_heads
     size_kv_heads = args.num_heads // kv_heads

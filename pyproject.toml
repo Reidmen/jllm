@@ -1,3 +1,24 @@
+[project]
+name = "jllama"
+version = "0.1.0"
+# NOTE: split between CPU, GPU, TPU 
+dependencies = [
+    "jax",
+    "flax",
+    "optax",
+    "numpy",
+    "transformers",
+    "tiktoken",
+    "jaxtyping",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytorch", # required for compatibility test
+    "pytest"
+]
+
+
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
 exclude = [
