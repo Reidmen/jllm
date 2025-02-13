@@ -83,18 +83,28 @@ def test_rotary_embedding(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
 
 
 def test_RMSNorm(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
-    """Test JAX RMSNorm implementation against PyTorch reference."""
+    """Test JAX RMSNorm implementation against jnp.numpy reference."""
     # Generate random input
     x = numpy.random.randn(args.max_batch_size, args.embed_dim).astype(numpy.float32)
 
-    # JAX implementation
+    # Jllama implementation
     rng = jax.random.PRNGKey(0)
     jax_rms_norm = RMSNorm(args.embed_dim, args.num_eps)
     jax_params = jax_rms_norm.init(rng, jnp.ones((args.embed_dim,), dtype=jnp.float32))
     jax_output = jax_rms_norm.apply({"params": jax_params}, jnp.asarray(x))
     jax_output = numpy.array(jax_output)
 
-    # TODO: add reference implementation
+    # Naive implementation
+    def naive_implementation(x: jnp.array, eps: float) -> jnp.array:
+        rms = jnp.sqrt(jnp.mean(x * x, axis=-1, keepdims=True) + eps)
+        return x / rms
+
+    # Compute naive implementation
+    naive_output = naive_implementation(jnp.asarray(x), args.num_eps)
+
+    # Assert comparison to naive implementaion
+    numpy.testing.assert_allclose(naive_output, jax_output, atol=atol)
+
 
 
 def test_GroupQueryAttention(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
@@ -113,8 +123,8 @@ def test_GroupQueryAttention(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
 
     # JAX implementation
     config = args.create_llama3_config()
-    jax_attention = GroupQueryAttention(config, precision=jax.lax.Precision.DEFAULT)
-    jax_params = freeze(
+    group_query_attention = GroupQueryAttention(config, precision=jax.lax.Precision.DEFAULT)
+    params = freeze(
         {
             "wq": {"kernel": jnp.asarray(wq)},
             "wk": {"kernel": jnp.asarray(wk)},
@@ -128,12 +138,28 @@ def test_GroupQueryAttention(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
         jnp.arange(args.max_seq_len, dtype=jnp.int32), (args.max_batch_size, args.max_seq_len)
     )
 
-    jax_output = jax_attention.apply(
-        {"params": jax_params},
+    gqa_output = group_query_attention.apply(
+        {"params": params},
         jnp.asarray(x),
         attention_mask,
         position_ids,
     )
-    jax_attention_output = numpy.array(jax_output[0])
+    jax_output = numpy.array(gqa_output[0])
 
-    # TODO: add reference implementation
+    # Naive implementation of the attention mechanism
+    naive_xq = jnp.dot(x, wq) # (batch_size, seq_len, embed_dim)
+    naive_xk = jnp.dot(x, wk) # (batch_size, seq_len, embed_dim // size_kv_heads)
+    naive_xv = jnp.dot(x, wv) # (batch_size, seq_len, embed_dim // size_kv_heads)
+
+    # Compute attention weights and scores QK^T / sqrt(d)
+    weights = jnp.matmul(naive_xq, naive_xk.transpose(0, 2, 1) / jnp.sqrt(naive_xq.shape[-1]))
+    # Compute softmax of the weights -> softmax(QK^T / sqrt(d))
+    scores =  jnp.exp(weights - jnp.max(weights, axis=-1, keepdims=True))
+    scores /= jnp.sum(scores, axis=-1, keepdims=True)
+
+    # Compute scores * V 
+    naive_output = jnp.matmul(scores, naive_xv)
+    naive_output = jnp.dot(scores, wo)
+
+    # Assert comparison to naive implementaion
+    numpy.testing.assert_allclose(naive_output, jax_output, atol=atol)
