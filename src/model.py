@@ -748,8 +748,7 @@ class LlamaDecoderLayer(nn.Module):
 
     def setup(self):
         # Gradient checkpointing for memory efficiency
-        if self.config.gradient_checkpointing:
-            raise NotImplementedError("Gradient checkpointing is not implemented for LLaMABlockCollection")
+        raise NotImplementedError("Gradient checkpointing is not implemented for LlamaDecoderLayer")
 
     def __call__(
         self,
