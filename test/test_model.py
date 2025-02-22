@@ -5,6 +5,7 @@ from typing import Optional
 
 import jax
 import jax.numpy as jnp
+import jax.experimental.pallas.ops.gpu.attention as pallas_attention
 from flax.core import freeze
 import numpy
 from ..src.model import GroupQueryAttention, LlamaConfig, _compute_freqs_cis, apply_rotary_embedding
@@ -106,7 +107,6 @@ def test_RMSNorm(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
     numpy.testing.assert_allclose(naive_output, jax_output, atol=atol)
 
 
-
 def test_GroupQueryAttention(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
     """Test JAX GroupQueryAttention implementation against jax.numpy reference."""
     # Setup dimensions
@@ -147,19 +147,59 @@ def test_GroupQueryAttention(args: ModelArgs = ModelArgs(), atol: float = 1e-5):
     jax_output = numpy.array(gqa_output[0])
 
     # Naive implementation of the attention mechanism
-    naive_xq = jnp.dot(x, wq) # (batch_size, seq_len, embed_dim)
-    naive_xk = jnp.dot(x, wk) # (batch_size, seq_len, embed_dim // size_kv_heads)
-    naive_xv = jnp.dot(x, wv) # (batch_size, seq_len, embed_dim // size_kv_heads)
+    naive_xq = jnp.dot(x, wq)  # (batch_size, seq_len, embed_dim)
+    naive_xk = jnp.dot(x, wk)  # (batch_size, seq_len, embed_dim // size_kv_heads)
+    naive_xv = jnp.dot(x, wv)  # (batch_size, seq_len, embed_dim // size_kv_heads)
 
     # Compute attention weights and scores QK^T / sqrt(d)
     weights = jnp.matmul(naive_xq, naive_xk.transpose(0, 2, 1) / jnp.sqrt(naive_xq.shape[-1]))
     # Compute softmax of the weights -> softmax(QK^T / sqrt(d))
-    scores =  jnp.exp(weights - jnp.max(weights, axis=-1, keepdims=True))
+    scores = jnp.exp(weights - jnp.max(weights, axis=-1, keepdims=True))
     scores /= jnp.sum(scores, axis=-1, keepdims=True)
 
-    # Compute scores * V 
+    # Compute scores * V
     naive_output = jnp.matmul(scores, naive_xv)
     naive_output = jnp.dot(scores, wo)
 
     # Assert comparison to naive implementaion
     numpy.testing.assert_allclose(naive_output, jax_output, atol=atol)
+
+
+def test_naive_attention(args: ModelArgs = ModelArgs, atol: float = 1e-2):
+    """Tests the naive attention implementation to the Pallas attention
+
+    The implementation assumes attention with causal masking.
+    """
+    batch_size = 1
+    seq_len = 2048
+    num_heads = args.num_heads
+    # The head dimension is taken from the embedding dimension
+    head_dim = args.embed_dim // args.num_heads
+
+    # Initialize Q, K, V matrices
+    key = jax.random.PRNGKey(0)
+    key_q, key_k, key_v = jax.random.split(key, 3)
+    Q = jax.random.normal(key_q, (batch_size, seq_len, num_heads, head_dim))
+    K = jax.random.normal(key_k, (batch_size, seq_len, num_heads, head_dim))
+    V = jax.random.normal(key_v, (batch_size, seq_len, num_heads, head_dim))
+
+    def naive_attention(_Q, _K, _V) -> jnp.ndarray:
+        # Compute attention scores with scaling
+        attention = jnp.einsum("BSHD,BTHD->BHST", _Q, _K) / jnp.sqrt(head_dim)
+        # Create causal mask
+        # An alternativ implementation is with a jnp.where instead of the substraction
+        mask = jnp.expand_dims(
+            jnp.expand_dims(jnp.triu(jnp.ones((seq_len, seq_len), dtype=jnp.bfloat16), k=1), axis=0), axis=0
+        )
+        # Apply softmax and get the attention weights
+        masked_attention = jax.nn.softmax(attention - 1e-6 * mask, axis=-1)
+        output = jnp.einsum("BHST,BTHD->BSHD", masked_attention, _V)
+
+        return output
+
+    naive_attention_output = naive_attention(Q, K, V)
+    pallas_attention_output = pallas_attention.mha_reference(Q, K, V, causal=True, segment_ids=None)
+
+    assert jnp.allclose(naive_attention_output, pallas_attention_output, rtol=1e-1, atol=atol), (
+        "Naive attention differs from Pallas implementation"
+    )

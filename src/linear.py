@@ -1,4 +1,4 @@
-"""Linear layers. """
+"""Linear layers."""
 
 from typing import Any, Iterable, Sequence
 
@@ -10,17 +10,17 @@ import numpy as np
 
 from model import RMSNorm
 
+
 class DenseGeneral(nn.Module):
-    """Linear Layer with flexible axes. """
+    """Linear Layer with flexible axes."""
 
     features: Sequence[int]
     axis: Iterable[int] | int = -1
     weight_dtype: jnp.dtype = jnp.float32
     dtype: jnp.dtype = jnp.float32
     kernel_init: Callable = nn.initializers.normal(stddev=1.0)
-    use_bias: bool = False 
+    use_bias: bool = False
     matmul_precision: str = "default"
-
 
     @nn.compact
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
@@ -30,13 +30,13 @@ class DenseGeneral(nn.Module):
         Args:
             x: The input to the linear layer.
         """
+
         def compute_dot_general(x, kernel, axis, contract_indices):
             """
             Compute the dot product of x and kernel, with the specified axes.
             """
             matmul_precision = jax.lax.Precision(self.matmul_precision)
             return jax.lax.dot_general(x, kernel, ((axis, contract_indices), ((), ())), precision=matmul_precision)
-
 
         kernel_shape = tuple(input.shape[ax] for ax in self.axis) + self.features
         kernel_in_axis = np.arange(len(self.axis))
@@ -60,7 +60,8 @@ class DenseGeneral(nn.Module):
 
 class MLPBlock(nn.Module):
     """Transformer MLP / Feed-Forward Block"""
-    config: dict[str, Any] 
+
+    config: dict[str, Any]
     intermediate_dim: int = 2048
     activations: Sequence[str | Callable[..., Any]] = ("relu",)
     intermediate_dropout_rate: float = 0.1
@@ -75,8 +76,8 @@ class MLPBlock(nn.Module):
             return RMSNorm
         else:
             raise ValueError(f"Not implemented decoder_block {self.config.decoder_block}")
-        
+
     @nn.compact
     def __call__(self, inputs, decode: bool = False, deterministic: bool = False):
         """Applies transformer MLPBlock module"""
-        raise NotImplementedError 
+        raise NotImplementedError
