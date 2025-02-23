@@ -7,7 +7,7 @@ from transformers import GenerationConfig
 import jax.numpy as jnp
 from flax import struct
 from jax.sharding import Mesh
-from jaxtyping import Pytree
+from jaxtyping import PyTree
 from dataclasses import dataclass
 import re
 from flax.core import freeze
@@ -32,7 +32,7 @@ class PartitionRule:
             e.g. PartitionSpec("dp", "mp") splits first dim by data parallelism, second dim by model parallelism
     """
 
-    pattern: tuple[str]
+    pattern: tuple[str, ...]
     spec: PartitionSpec
 
 
@@ -140,7 +140,7 @@ def with_sharding_constraint(x, axis_sharding):
 
 
 class LLaMA(struct.PyTreeNode):
-    params: Pytree
+    params: PyTree 
     model: Llama3ForCausalLM = struct.field(pytree_node=False)
     tokenizer: Tokenizer = struct.field(pytree_node=False)
     mesh: Optional[Mesh] = struct.field(pytree_node=False, default=None)
@@ -154,8 +154,8 @@ class LLaMA(struct.PyTreeNode):
         temperature: float = 0.7,
         top_p: float = 0.95,
     ) -> jnp.ndarray:
-        tokens = with_sharding_constraint(tokens, self.mesh, ["batch", "length"])
-        attention_mask = with_sharding_constraint(attention_mask, self.mesh, ["batch", "length"])
+        tokens = with_sharding_constraint(tokens, ["batch", "length"])
+        attention_mask = with_sharding_constraint(attention_mask, ["batch", "length"])
 
         generation = self.model.generate(
             input_ids=tokens,
@@ -173,7 +173,7 @@ class LLaMA(struct.PyTreeNode):
         )
 
         out_tokens = generation.sequences
-        out_tokens = with_sharding_constraint(out_tokens, self.mesh, PartitionSpec("batch", None))
+        out_tokens = with_sharding_constraint(out_tokens, self.mesh, PartitionSpec(("batch", None)))
         return out_tokens
 
     def generate_from_str(

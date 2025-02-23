@@ -1,0 +1,13 @@
+Metadata-Version: 2.2
+Name: jllama
+Version: 0.1.0
+Requires-Dist: jax
+Requires-Dist: flax
+Requires-Dist: optax
+Requires-Dist: numpy
+Requires-Dist: transformers
+Requires-Dist: tiktoken
+Requires-Dist: jaxtyping
+Provides-Extra: dev
+Requires-Dist: pytorch; extra == "dev"
+Requires-Dist: pytest; extra == "dev"

@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from src.kernels import (
+from jllama.kernels import (
     ragged_group_query_attention,
     ragged_multiquery_attention,
     ragged_multihead_attention,

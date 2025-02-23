@@ -2,3 +2,5 @@
 *.env
 *.log
 .cursorrules
+.vscode
+**/*__pycache__

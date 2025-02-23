@@ -1,0 +1,11 @@
+jax
+flax
+optax
+numpy
+transformers
+tiktoken
+jaxtyping
+
+[dev]
+pytorch
+pytest

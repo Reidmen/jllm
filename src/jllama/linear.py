@@ -8,7 +8,7 @@ from flax import linen as nn
 from typing import Callable
 import numpy as np
 
-from model import RMSNorm
+from jllama.model import RMSNorm
 
 
 class DenseGeneral(nn.Module):
