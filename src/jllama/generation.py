@@ -140,7 +140,7 @@ def with_sharding_constraint(x, axis_sharding):
 
 
 class LLaMA(struct.PyTreeNode):
-    params: PyTree 
+    params: PyTree
     model: Llama3ForCausalLM = struct.field(pytree_node=False)
     tokenizer: Tokenizer = struct.field(pytree_node=False)
     mesh: Optional[Mesh] = struct.field(pytree_node=False, default=None)
