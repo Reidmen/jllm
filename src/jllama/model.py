@@ -976,7 +976,7 @@ class Llama3ForCausalLM(LlamaPreTrainedModel):
         # [batch_size, seq_len, hidden_size] -> [batch_size, seq_len, vocab_size]
         if self.llama_config.tie_word_embeddings:
             # Reuse input embedding weights for output projection
-            shared_kernel = self.llama_module.variables["params"]["wte"]["embedding"].T
+            shared_kernel = self.module_class.variables["params"]["wte"]["embedding"].T
             lm_logits = lm_head.apply({"params": {"kernel": shared_kernel}}, hidden_states)
         else:
             # Use separate output projection weights
