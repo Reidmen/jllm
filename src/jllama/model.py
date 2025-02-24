@@ -262,10 +262,10 @@ class LlamaPreTrainedModel(FlaxPreTrainedModel):
         self,
         rng: jax.random.PRNGKey,
         input_shape: tuple[int, ...],
-        params: FrozenDict = None,
+        params: FrozenDict | None = None,
     ) -> FrozenDict:
         # TODO initialization of module_init_outputs
-        pass
+        raise NotImplementedError
 
 
 class RMSNorm(nn.Module):
@@ -487,17 +487,20 @@ class GroupQueryAttention(nn.Module):
         if not deterministic or self.config.attention_dropout > 0.0:
             dropout_rng = self.make_rng("dropout")
         else:
-            dropout_rng = jnp.random.PRNGKey(0)
+            dropout_rng = jax.random.PRNGKey(0)
 
         # Handle KV caching for faster autoregressive decoding
         if self.has_variable("cache", "cache_key"):
             xk, xv, attention_mask = self._contatenate_to_cache(xk, xv, xq, attention_mask)
 
+        if attention_mask is None:
+            raise ValueError(f"_concatenate_to_cache failed, {attention_mask=}")
+
         # Convert boolean mask to float attention bias
         # True -> 0.0, False -> -inf in attention logits
         # Shape: [batch_size, 1, query_length, key_length]
         attention_bias = lax.select(
-            attention_bias > 0,
+            attention_mask > 0,
             jnp.full(attention_mask.shape, 0.0).astype(self.dtype),
             jnp.full(attention_mask.shape, jnp.finfo(self.dtype).min).astype(self.dtype),
         )
@@ -804,7 +807,7 @@ class LlamaDecoderLayer(nn.Module):
         # - all_attentions (optional): tuple of [batch_size, num_heads, seq_len, seq_len]
         outputs = (hidden_states, all_hidden_states, all_attentions)
 
-        return outputs
+        return outputs # type: ignore 
 
 
 class Llama3Model(nn.Module):
@@ -821,7 +824,7 @@ class Llama3Model(nn.Module):
       )
     """
 
-    config: LlamaConfig
+    llama_config: LlamaConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
@@ -842,15 +845,15 @@ class Llama3Model(nn.Module):
         # Input Shape: [vocab_size, embedding_size]
         # When called, outputs Shape: [batch_size, seq_len, embedding_size]
         input_embeddings = nn.Embed(
-            num_embeddings=self.config.vocab_size,
-            features=self.config.embedding_size,
-            embedding_init=jax.nn.initializers.normal(stddev=self.config.initializer_range),
+            num_embeddings=self.llama_config.vocab_size,
+            features=self.llama_config.embedding_size,
+            embedding_init=jax.nn.initializers.normal(stddev=self.llama_config.initializer_range),
             dtype=self.dtype,
             param_dtype=self.param_dtype,
         )(input_ids.astype("i4"))
 
         # 2. Apply embedding dropout
-        hidden_states = nn.Dropout(rate=self.config.embedding_prob_dropout, deterministic=deterministic)(
+        hidden_states = nn.Dropout(rate=self.llama_config.embedding_prob_dropout, deterministic=deterministic)(
             input_embeddings
         )
 
@@ -860,7 +863,7 @@ class Llama3Model(nn.Module):
         # - All layer hidden states (if output_hidden_states=True)
         # - All layer attention weights (if output_attentions=True)
         outputs = LlamaDecoderLayer(
-            self.config,
+            self.llama_config,
             dtype=self.dtype,
             param_dtype=self.param_dtype,
             precision=self.precision,
@@ -871,14 +874,12 @@ class Llama3Model(nn.Module):
             deterministic=deterministic,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
-            init_cache=init_cache,
-            return_dict=return_dict,
         )
 
         # 4. Apply final layer normalization
         hidden_states = RMSNorm(
-            self.config.hidden_size,
-            eps=self.config.rms_norm_eps,
+            self.llama_config.hidden_size,
+            eps=self.llama_config.rms_norm_eps,
             dtype=self.dtype,
             param_dtype=self.param_dtype,
         )(outputs[0])
@@ -904,7 +905,7 @@ class Llama3ForCausalLM(LlamaPreTrainedModel):
     Llama3 model with a language modeling head.
     """
 
-    config: LlamaConfig
+    llama_config: LlamaConfig
     dtype: jnp.dtype = jnp.float32
     param_dtype: jnp.dtype = jnp.float32
     precision: Optional[jax.lax.Precision] = None
@@ -947,7 +948,7 @@ class Llama3ForCausalLM(LlamaPreTrainedModel):
         return_dict: bool = True,
     ):
         # 1. Get transformer outputs
-        outputs = Llama3Model(self.config, self.dtype, self.param_dtype, self.precision)(
+        outputs = Llama3Model(self.llama_config, self.dtype, self.param_dtype, self.precision)(
             input_ids,
             attention_mask,
             position_ids,
@@ -964,16 +965,16 @@ class Llama3ForCausalLM(LlamaPreTrainedModel):
         # 3. Project to vocabulary distribution
         # Shape: [hidden_size, vocab_size]
         lm_head = nn.Dense(
-            features=self.config.vocab_size,
+            features=self.llama_config.vocab_size,
             dtype=self.dtype,
             param_dtype=self.param_dtype,
             use_bias=False,
-            kernel_init=jax.nn.initializers.normal(stddev=self.config.initializer_range),
+            kernel_init=jax.nn.initializers.normal(stddev=self.llama_config.initializer_range),
             precision=self.precision,
         )
 
         # [batch_size, seq_len, hidden_size] -> [batch_size, seq_len, vocab_size]
-        if self.config.tie_word_embeddings:
+        if self.llama_config.tie_word_embeddings:
             # Reuse input embedding weights for output projection
             shared_kernel = self.llama_module.variables["params"]["wte"]["embedding"].T
             lm_logits = lm_head.apply({"params": {"kernel": shared_kernel}}, hidden_states)
