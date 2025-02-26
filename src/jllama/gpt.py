@@ -89,7 +89,7 @@ class FeedForward(nn.Module):
     def forward(self, x: jax.Array) -> jax.Array:
         gate_projection = nn.Dense(self.embedding_factor * self.args.embedding_size)(x)
         activated_output = gate_projection * nn.sigmoid(gate_projection)
-        output_projection = self.Dense(self.args.embedding_size)(activated_output)
+        output_projection = nn.Dense(self.args.embedding_size)(activated_output)
         output = nn.Dropout(self.rate_dropout)(output_projection)
 
         return output
@@ -126,3 +126,52 @@ class TransformerBlock(nn.Module):
         output = y + self.output_layer_norm(y)
 
         return output 
+
+
+class GPTLikeModel(nn.Module):
+    args: ModelArgs
+    rate_dropout: float
+    embedding_factor: int
+    block_size: int
+
+
+    def setup(self) -> None:
+        self.token_embedding = nn.Embed(num_embeddings=self.args.vocab_size, features=self.args.embedding_size)
+        self.positional_embedding = nn.Embed(
+            num_embeddings=self.block_size, features=self.args.embedding_size
+        )
+        self.blocks = [TransformerBlock(
+            self.args, self.rate_dropout, self.embedding_factor, name=f"block_{i}") for i in range(self.args.num_layers)
+            ]
+        self.layer_norm = nn.LayerNorm(self.args.embedding_size)
+        self.linear_layer = nn.Dense(features=self.args.vocab_size)
+
+    
+    @nn.compact
+    def forward(self, input_tokens: jax.Array, targets: jax.Array | None):
+        batch_size, seq_length = input_tokens.shape
+        token_embedding = self.token_embedding(input_tokens)
+        positional_embedding = self.positional_embedding(jnp.arange(seq_length))
+        x = token_embedding + positional_embedding
+        for transformer_block in self.blocks:
+            x = transformer_block(x)
+        x = self.layer_norm(x)
+
+        logits = self.linear_layer(x)
+
+        if targets is None:
+            # At inference
+            loss = None
+        else:
+            batch_size, seq_length, embedding_dim = logits.shape
+            logits = jnp.reshape(logits, (batch_size * seq_length, embedding_dim))
+            targets = jnp.reshape(targets, (batch_size * seq_length))
+            # Compute cross-entropy loss
+            loss = jax.nn.softmax(logits)  # Apply softmax to logits
+            loss = -jnp.sum(targets * jnp.log(loss + 1e-10)) / batch_size  # Cross-entropy calculation
+
+        return logits, loss
+
+
+
+                    
