@@ -807,7 +807,7 @@ class LlamaDecoderLayer(nn.Module):
         # - all_attentions (optional): tuple of [batch_size, num_heads, seq_len, seq_len]
         outputs = (hidden_states, all_hidden_states, all_attentions)
 
-        return outputs # type: ignore 
+        return outputs  # type: ignore
 
 
 class Llama3Model(nn.Module):
