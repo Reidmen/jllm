@@ -38,16 +38,15 @@ class Attention(nn.Module):
         """Computes the self-attention output.
 
         Args:
-            x: Input array of shape (B, T, D), where B is the batch size,
-               T is the sequence length, and D is the embedding dimension.
+            x: Array, shape (batch_size, seq_len, embed_dim).
 
         Returns:
-            Output array of shape (B, T, D) after applying self-attention.
+            Output array of shape (batch_size, seq_len, embed_dim) after applying self-attention.
         """
         # Compute key, query, and value matrices
-        K = self._Wk(x)  # shape: (B, T, H)
-        Q = self._Wq(x)  # shape: (B, S, H)
-        V = self._Wv(x)  # shape: (B, S, H)
+        K = self._Wk(x)  # shape: (batch_size, seq_len, head_size)
+        Q = self._Wq(x)  # shape: (batch_size, seq_len, head_size)
+        V = self._Wv(x)  # shape: (batch_size, seq_len, head_size)
 
         # Compute attention scores
         attention_scores = jnp.einsum("BTH,BSH->BTS", Q, K) / jnp.sqrt(K.shape[-1])
@@ -72,8 +71,10 @@ class MultiHeadAttention(nn.Module):
     @nn.compact
     def __call__(self, x: jax.Array) -> jax.Array:
         """Computes the multihead attention output"""
-        outputs = [head(x) for head in self.attention_heads]  # list of (B, T, H) tensors
-        return jnp.concatenate(outputs, axis=-1)  # shape: (B, T, D), with D = H * num_heads
+        # list of (batch_size, seq_len, head_size) tensors
+        outputs = [head(x) for head in self.attention_heads]
+        # concatenate the outputs along the last dimension
+        return jnp.concatenate(outputs, axis=-1)  # shape: (batch_size, seq_len, num_heads * head_size)
 
 
 class FeedForward(nn.Module):
@@ -94,8 +95,8 @@ class FeedForward(nn.Module):
 class TransformerBlock(nn.Module):
     """Transformer Block
 
-    Input x shape: (B, T, D)
-    Output array shape: (B, T, D)
+    Input x shape: (batch_size, seq_len, embed_dim)
+    Output array shape: (batch_size, seq_len, embed_dim)
 
     Scheme:
     Input (x) --> [LayerNorm] --> [MultiHeadAttention] --> + --> [LayerNorm] --> Output
@@ -120,15 +121,14 @@ class TransformerBlock(nn.Module):
         """Forward pass of the transformer block
 
         Args:
-            x: Input array of shape (B, T, D)
+            x: Input array of shape (batch_size, seq_len, embed_dim).
 
         Returns:
-            Output array of shape (B, T, D)
+            Output array of shape (batch_size, seq_len, embed_dim).
         """
         # First residual block - attention with layer norm
         y = x + self.multihead_attention(self.input_layer_norm(x))
         # Second residual block - feed forward with layer norm
-        # Output multihead attention (B, T, D)
         output = y + self.output_layer_norm(self.feed_forward(y))
 
         return output
@@ -155,28 +155,28 @@ class GPTLikeModel(nn.Module):
         """Forward pass of the GPT-like model
 
         Args:
-            input_tokens: Input tokens of shape (B, T)
-            targets: Target tokens of shape (B, T)
+            input_tokens: Input tokens of shape (batch_size, seq_len).
+            targets: Target tokens of shape (batch_size, seq_len).
 
         Returns:
-            logits shape: (B, T, V)
+            logits shape: (batch_size, seq_len, vocab_size)
             loss shape: () or None if targets is None
         """
         # Get shapes
         batch_size, seq_length = input_tokens.shape
 
         # Get token embeddings and positional embeddings
-        token_embedding = self.token_embedding(input_tokens)  # shape: (B, T, D)
-        positional_embedding = self.positional_embedding(jnp.arange(seq_length))  # shape: (T, D)
-        x = token_embedding + positional_embedding  # shape: (B, T, D)
+        token_embedding = self.token_embedding(input_tokens)  # shape: (batch_size, seq_len, embed_dim)
+        positional_embedding = self.positional_embedding(jnp.arange(seq_length))  # shape: (seq_len, embed_dim)
+        x = token_embedding + positional_embedding  # shape: (batch_size, seq_len, embed_dim)
 
         # Apply transformer blocks
         for transformer_block in self.blocks:
-            x = transformer_block(x)  # shape: (B, T, D)
-        x = self.layer_norm(x)  # shape: (B, T, D)
+            x = transformer_block(x)  # shape: (batch_size, seq_len, embed_dim)
+        x = self.layer_norm(x)  # shape: (batch_size, seq_len, embed_dim)
 
         # Get logits
-        logits = self.linear_layer(x)  # shape: (B, T, V)
+        logits = self.linear_layer(x)  # shape: (batch_size, seq_len, vocab_size)
 
         if targets is None:
             # At inference
@@ -186,11 +186,10 @@ class GPTLikeModel(nn.Module):
             batch_size, seq_length, vocab_size = logits.shape
             logits_2d = jnp.reshape(logits, (batch_size * seq_length, vocab_size))
             targets_1d = jnp.reshape(targets, (batch_size * seq_length))
-            # Compute cross-entropy loss
             # Computing the one-hot encoding of the targets
-            targets_one_hot = jax.nn.one_hot(targets_1d, vocab_size)  # shape: (B * T, V)
+            targets_one_hot = jax.nn.one_hot(targets_1d, vocab_size)  # shape: (batch_size * seq_length, vocab_size)
             # Computing the log softmax of the logits
-            log_softmax = jax.nn.log_softmax(logits_2d, axis=-1)  # shape: (B * T, V)
+            log_softmax = jax.nn.log_softmax(logits_2d, axis=-1)  # shape: (batch_size * seq_length, vocab_size)
             # Computing the cross-entropy loss
             loss = -jnp.sum(targets_one_hot * log_softmax) / (batch_size * seq_length)  # shape: ()
 
