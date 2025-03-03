@@ -34,7 +34,7 @@ class Attention(nn.Module):
         self.dropout = nn.Dropout(self.rate_dropout)
 
     @nn.compact
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
         """Computes the self-attention output.
 
         Args:
@@ -53,7 +53,8 @@ class Attention(nn.Module):
         attention_weights = nn.softmax(attention_scores, axis=-1)
 
         # Apply dropout to attention weights
-        attention_weights = self.dropout(attention_weights)
+        if not deterministic:
+            attention_weights = self.dropout(attention_weights)
 
         # Compute the output as a weighted sum of values
         output = jnp.einsum("BTS,BSH->BTH", attention_weights, V)
@@ -69,10 +70,10 @@ class MultiHeadAttention(nn.Module):
         self.attention_heads = [Attention(self.args, self.rate_dropout) for _ in range(self.args.num_heads)]
 
     @nn.compact
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
         """Computes the multihead attention output"""
         # list of (batch_size, seq_len, head_size) tensors
-        outputs = [head(x) for head in self.attention_heads]
+        outputs = [head(x, deterministic) for head in self.attention_heads]
         # concatenate the outputs along the last dimension
         return jnp.concatenate(outputs, axis=-1)  # shape: (batch_size, seq_len, num_heads * head_size)
 
@@ -83,13 +84,16 @@ class FeedForward(nn.Module):
     embedding_factor: int
 
     @nn.compact
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
         gate_projection = nn.Dense(self.embedding_factor * self.args.embedding_size)(x)
         activated_output = gate_projection * nn.sigmoid(gate_projection)
         output_projection = nn.Dense(self.args.embedding_size)(activated_output)
-        output = nn.Dropout(self.rate_dropout)(output_projection)
+        if not deterministic:
+            output = nn.Dropout(self.rate_dropout)(output_projection)
+        else:
+            output = output_projection
 
-        return output
+        return output  # shape: (batch_size, seq_len, embedding_size)
 
 
 class TransformerBlock(nn.Module):
@@ -109,15 +113,13 @@ class TransformerBlock(nn.Module):
     embedding_factor: int
 
     def setup(self) -> None:
-        head_size = self.args.embedding_size // self.args.num_heads
-        # Define layers
         self.multihead_attention = MultiHeadAttention(self.args, self.rate_dropout)
         self.feed_forward = FeedForward(self.args, self.rate_dropout, self.embedding_factor)
         self.input_layer_norm = nn.LayerNorm(self.args.norm_eps)
         self.output_layer_norm = nn.LayerNorm(self.args.norm_eps)
 
     @nn.compact
-    def __call__(self, x: jax.Array) -> jax.Array:
+    def __call__(self, x: jax.Array, deterministic: bool = True) -> jax.Array:
         """Forward pass of the transformer block
 
         Args:
@@ -127,9 +129,9 @@ class TransformerBlock(nn.Module):
             Output array of shape (batch_size, seq_len, embed_dim).
         """
         # First residual block - attention with layer norm
-        y = x + self.multihead_attention(self.input_layer_norm(x))
+        y = x + self.multihead_attention(self.input_layer_norm(x), deterministic)
         # Second residual block - feed forward with layer norm
-        output = y + self.output_layer_norm(self.feed_forward(y))
+        output = y + self.output_layer_norm(self.feed_forward(y, deterministic))
 
         return output
 
@@ -199,12 +201,12 @@ class GPTLikeModel(nn.Module):
         """Generates a new sequence of tokens from the input_tokens sequence
 
         Args:
-            input_tokens: Input tokens of shape (B, T)
+            input_tokens: Input tokens of shape (batch_size, seq_len)
             max_new_tokens: Maximum number of new tokens to generate
             temperature: Sampling temperature (higher == more random)
 
         Returns:
-            Extended token sequence, shape (B, T + max_new_tokens)
+            Extended token sequence, shape (batch_size, seq_len + max_new_tokens)
         """
         for _ in range(max_new_tokens):
             # Take last block_size tokens as context
