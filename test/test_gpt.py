@@ -28,7 +28,7 @@ class TestAttention:
 
         head_size = model_args.embedding_size // model_args.num_heads
         batch_size, seq_len, _ = sample_input.shape
-        assert output.shape == (batch_size, seq_len, head_size) # type: ignore
+        assert output.shape == (batch_size, seq_len, head_size)  # type: ignore
 
 
 class TestMultiHeadAttention:
@@ -38,7 +38,7 @@ class TestMultiHeadAttention:
         output = mha.apply(variables, sample_input, deterministic=True)
 
         batch_size, seq_len, _ = sample_input.shape
-        assert output.shape == (batch_size, seq_len, model_args.embedding_size) # type: ignore
+        assert output.shape == (batch_size, seq_len, model_args.embedding_size)  # type: ignore
 
 
 class TestFeedForward:
@@ -47,7 +47,7 @@ class TestFeedForward:
         variables = ff.init(jax.random.PRNGKey(0), sample_input, deterministic=True)
         output = ff.apply(variables, sample_input, deterministic=True)
 
-        assert output.shape == sample_input.shape # type: ignore
+        assert output.shape == sample_input.shape  # type: ignore
 
 
 class TestTransformerBlock:
@@ -56,4 +56,4 @@ class TestTransformerBlock:
         variables = block.init(jax.random.PRNGKey(0), sample_input, deterministic=True)
         output = block.apply(variables, sample_input, deterministic=True)
 
-        assert output.shape == sample_input.shape # type: ignore
+        assert output.shape == sample_input.shape  # type: ignore
