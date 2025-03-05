@@ -54,6 +54,34 @@ def initialize_train_state(
     ), learning_rate_schedule
 
 
+def train_step(
+        state: train_state.TrainState,
+        batch: jnp.ndarray,
+    rng: jnp.ndarray = jax.random.PRNGKey(0),
+) -> tuple[train_state.TrainState, jnp.ndarray, jnp.ndarray]:
+    """Train step."""
+    def loss_fn(params: PyTree, x: jnp.ndarray, targets: jnp.ndarray, train: bool = True, rng: jnp.ndarray = jax.random.PRNGKey(0)) -> jnp.ndarray:
+        _, loss = state.apply_fn(
+            {"params": params},
+            x,
+            targets = targets,
+            train = train,
+            rng = rng,
+        )
+        return loss
+
+    x, y = batch
+    key0, key1 = jax.random.split(rng)
+    gradient_fn = jax.value_and_grad(loss_fn)
+    (loss, grads) = gradient_fn(state.params, x, targets=y, rng=key0)
+    state = state.apply_gradients(grads=grads)
+    return state, loss, key1
+
+
+
+    
+
+
 if __name__ == "__main__":
     from jllama.gpt import GPTLikeModel
     from jllama.utils import ModelArgs
