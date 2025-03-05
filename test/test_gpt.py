@@ -18,6 +18,7 @@ def sample_input():
     x = jax.random.normal(key, (batch_size, seq_len, embed_dim))
     return x
 
+
 # Define sample input tokens
 @pytest.fixture
 def sample_input_tokens():
@@ -25,6 +26,7 @@ def sample_input_tokens():
     key = jax.random.PRNGKey(1)
     x = jax.random.randint(key, (batch_size, seq_len), minval=0, maxval=2000)
     return x
+
 
 # NOTE: We use init, and apply to avoid CallCompactUnboundMethodError, as we are in flax.linen
 class TestAttention:
@@ -78,7 +80,9 @@ class TestGPTLikeModel:
 
     def test_gptlike_model_with_targets_shape(self, model_args, sample_input_tokens):
         batch_size, seq_len = sample_input_tokens.shape
-        targets = jax.random.randint(jax.random.PRNGKey(0), (batch_size, seq_len), minval=0, maxval=model_args.vocab_size)
+        targets = jax.random.randint(
+            jax.random.PRNGKey(0), (batch_size, seq_len), minval=0, maxval=model_args.vocab_size
+        )
 
         gpt = GPTLikeModel(model_args, rate_dropout=0.1, embedding_factor=2, block_size=3)
         variables = gpt.init(jax.random.PRNGKey(0), sample_input_tokens, deterministic=True)
