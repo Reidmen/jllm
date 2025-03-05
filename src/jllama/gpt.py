@@ -153,7 +153,7 @@ class GPTLikeModel(nn.Module):
         self.linear_layer = nn.Dense(features=self.args.vocab_size)
 
     @nn.compact
-    def __call__(self, input_tokens: jax.Array, targets: jax.Array | None):
+    def __call__(self, input_tokens: jax.Array, targets: jax.Array | None = None, deterministic: bool = True):
         """Forward pass of the GPT-like model
 
         Args:
@@ -174,7 +174,7 @@ class GPTLikeModel(nn.Module):
 
         # Apply transformer blocks
         for transformer_block in self.blocks:
-            x = transformer_block(x)  # shape: (batch_size, seq_len, embed_dim)
+            x = transformer_block(x, deterministic)  # shape: (batch_size, seq_len, embed_dim)
         x = self.layer_norm(x)  # shape: (batch_size, seq_len, embed_dim)
 
         # Get logits
