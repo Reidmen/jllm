@@ -55,18 +55,25 @@ def initialize_train_state(
 
 
 def train_step(
-        state: train_state.TrainState,
-        batch: jnp.ndarray,
+    state: train_state.TrainState,
+    batch: jnp.ndarray,
     rng: jnp.ndarray = jax.random.PRNGKey(0),
 ) -> tuple[train_state.TrainState, jnp.ndarray, jnp.ndarray]:
     """Train step."""
-    def loss_fn(params: PyTree, x: jnp.ndarray, targets: jnp.ndarray, train: bool = True, rng: jnp.ndarray = jax.random.PRNGKey(0)) -> jnp.ndarray:
+
+    def loss_fn(
+        params: PyTree,
+        x: jnp.ndarray,
+        targets: jnp.ndarray,
+        train: bool = True,
+        rng: jnp.ndarray = jax.random.PRNGKey(0),
+    ) -> jnp.ndarray:
         _, loss = state.apply_fn(
             {"params": params},
             x,
-            targets = targets,
-            train = train,
-            rng = rng,
+            targets=targets,
+            train=train,
+            rng=rng,
         )
         return loss
 
@@ -76,10 +83,6 @@ def train_step(
     (loss, grads) = gradient_fn(state.params, x, targets=y, rng=key0)
     state = state.apply_gradients(grads=grads)
     return state, loss, key1
-
-
-
-    
 
 
 if __name__ == "__main__":
