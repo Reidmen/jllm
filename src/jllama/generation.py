@@ -13,7 +13,7 @@ import re
 from flax.core import freeze
 from flax.traverse_util import flatten_dict, unflatten_dict
 from functools import partial
-from .model import Llama3ForCausalLM
+from .llama_model import Llama3ForCausalLM
 from .tokenizer import Tokenizer
 
 

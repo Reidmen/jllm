@@ -8,8 +8,8 @@ import jax.numpy as jnp
 import jax.experimental.pallas.ops.gpu.attention as pallas_attention
 from flax.core import freeze
 import numpy
-from jllama.model import GroupQueryAttention, LlamaConfig, _compute_freqs_cis, apply_rotary_embedding
-from jllama.model import RMSNorm
+from jllama.llama_model import GroupQueryAttention, LlamaConfig, _compute_freqs_cis, apply_rotary_embedding
+from jllama.llama_model import RMSNorm
 
 
 @dataclass

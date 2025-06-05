@@ -3,7 +3,7 @@
 
 from jaxtyping import PyTree
 import torch  # type: ignore
-from jllama.model import LlamaConfig, Llama3ForCausalLM
+from jllama.llama_model import LlamaConfig, Llama3ForCausalLM
 from jllama.tokenizer import Tokenizer
 from dataclasses import dataclass
 from pathlib import Path
