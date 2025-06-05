@@ -1,48 +1,27 @@
-This repository implements the Llama3.2 1B model in JAX.
+# JLLM
+This repository contains pieces of code to run `Llama-3.2-1B` or `Qwen3-0.6B`. 
 
-It aims to be an experimental playground for understanding the architecture of the Llama3.2 model and potential speedups.
+The goal is educational and aims at providing a `JAX` implementation of each architecture component.
 
-## Model Architecture
 
-From `transformers` package, we can execute:
+## Setup Environment
 
-```python
-from transformers import AutoTokenizer, AutoModelForCausalLM
+I strongly recommend using `uv`. Then proceed as follows:
 
-tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
-model = AutoModelForCausalLM.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
-print(model)
+```bash
+uv venv .venv 
+uv pip install . 
 ```
 
-The model architecture is given by:
 
-```
-LlamaForCausalLM(
-  (model): LlamaModel(
-    (embed_tokens): Embedding(128256, 2048)
-    (layers): ModuleList(
-      (0-15): 16 x LlamaDecoderLayer(
-        (self_attn): LlamaSdpaAttention(
-          (q_proj): Linear(in_features=2048, out_features=2048, bias=False)
-          (k_proj): Linear(in_features=2048, out_features=512, bias=False)
-          (v_proj): Linear(in_features=2048, out_features=512, bias=False)
-          (o_proj): Linear(in_features=2048, out_features=2048, bias=False)
-          (rotary_emb): LlamaRotaryEmbedding()
-        )
-        (mlp): LlamaMLP(
-          (gate_proj): Linear(in_features=2048, out_features=8192, bias=False)
-          (up_proj): Linear(in_features=2048, out_features=8192, bias=False)
-          (down_proj): Linear(in_features=8192, out_features=2048, bias=False)
-          (act_fn): SiLU()
-        )
-        (input_layernorm): LlamaRMSNorm()
-        (post_attention_layernorm): LlamaRMSNorm()
-      )
-    )
-    (norm): LlamaRMSNorm()
-    (rotary_emb): LlamaRotaryEmbedding()
-  )
-  (lm_head): Linear(in_features=2048, out_features=128256, bias=False)
-)
-```
+## Qwen3-0.6B
 
+Following the open-weighted models from Qwen, this repo contains the architecture 
+implementation to run Qwen3-0.6B parameters model.
+
+From its [release-notes](https://qwenlm.github.io/blog/qwen3/), the model characteristics are:
+
+* Qwen3-0.6B, 28 Layers, 16 / 8 Heads (Q / KV), with tie embedding, and a context 
+length of 32K. 
+
+TODO: THE GOAL FOR THIS IS TO RUN IN COLAB / KAGGLE 
