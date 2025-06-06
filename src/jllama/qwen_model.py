@@ -4,6 +4,8 @@
 
 """Minimal definitions"""
 
+import json
+from pathlib import Path
 import jax
 import jax.numpy as jnp
 import dataclasses
@@ -13,6 +15,8 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ma
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec, use_mesh
 from etils import epath
+
+from typing import Any
 
 # Physical mesh axis names for readability
 # x - batch dimension
@@ -86,8 +90,42 @@ class Config:
   quant_cache: bool = False
   quant_scale_dtype: "jnp.dtype" = jnp.bfloat16
 
+def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
+  _get = lambda x, k, default=None:(
+    getattr(x, k, default) if not isinstance(hf_config, dict) else hf_config.get(k, default)
+  )
+  return Config(
+    # General
+    embed_size=_get(hf_config, "hidden_size"),
+    q_heads=_get(hf_config, "num_attention_heads"),
+    kv_heads=_get(hf_config, "num_key_value_heads"),
+    num_layers=_get(hf_config, "num_hidden_layers"),
+    head_dim=_get(hf_config, "head_dim"),
+    vocab_size=_get(hf_config, "vocab_size"),
+    max_seq_len=128,
+    # Attention
+    causal_attn=True,
+    # Mixture-of-Experts
+    moe_experts_per_tok=_get(hf_config, "num_experts_per_tok"),
+    moe_num_experts=_get(hf_config, "num_experts"),
+    # RoPE
+    rope_theta=_get(hf_config, "rope_theta"),
+  )
 
-def logical_to_sharding(): pass
+def load_config(config_path: str | Path) -> Config:
+  return hf_to_Config(json.loads(Path(config_path).read_text()))
+
+
+def logical_to_physical(logical: Axes, rules: ShardingRules) -> jax.sharding.PartitionSpec:
+  """Map from logical axes to physical mesh axes"""
+  spec = [getattr(rules, axis) if axis is not None else None for axis in logical]
+  flat_axes = jax.tree.leaves(spec)
+  if len(set(flat_axes)) != len(flat_axes):
+    raise ValueError("Duplicate axes in sharding rules")
+  return PartitionSpec(*spec)
+
+def logical_to_sharding(logical: Axes, mesh: jax.sharding.Mesh, rules: ShardingRules) -> jax.sharding.Sharding:
+  return jax.sharding.NamedSharding(mesh, logical_to_physical(logical, rules))
 
 # Friendly isinstance checks
 is_type = lambda x, cls: (type(x).__name__ == cls.__name__) and (type(x).__module__ == cls.__module__)
@@ -97,7 +135,7 @@ class ShardingBase:
   """Base class, which contains Sharding logic required for all layers
   
   Given a class `cls`, `cls.sharding` will initialize the layer (including
-  the mapping from logical axes to mesh axes) 
+  the mapping from logical axes to mesh axes). 
   """
   @classmethod
   def initialize(cls, cfg: Config, *args, **kwargs):
@@ -111,4 +149,3 @@ class ShardingBase:
       initialize,
       is_leaf=is_param
     )
-
