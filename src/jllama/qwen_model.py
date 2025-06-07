@@ -19,6 +19,28 @@ from etils import epath
 
 from typing import Any
 
+OCDBT_TARGET_SIZE = 1024 * 1024 * 1024
+
+
+# (de)-serialization functions
+def save_pytree(data, path: Path):
+  import orbax.checkpoint as ochkpt
+
+  with ochkpt.PyTreeCheckpointer() as chkptr:
+    chkptr.save(Path(path), data, ochkpt.args.PyTreeSave(data, ocdbt_target_data_file_size=OCDBT_TARGET_SIZE))
+
+
+def load_pytree(path: str | Path, sharding: jax.sharding.Sharding | None = None):
+  import orbax.checkpoint as ochkpt
+
+  item, transform = sharding, None
+  restore_args = jax.tree.map(lambda s: ochkpt.ArrayRestoreArgs(sharding=s), sharding)
+  with ochkpt.PyTreeCheckpointer() as chkptr:
+    return chkptr.restore(
+      Path(path), args=ochkpt.args.PyTreeRestore(item=item, transforms=transform, restore_args=restore_args)
+    )
+
+
 # Physical mesh axis names for readability
 # x - batch dimension
 # y - 1st of 2D tensor sharding
