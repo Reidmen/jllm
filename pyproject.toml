@@ -15,7 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytorch", # required for compatibility test
-    "pytest"
+    "pytest",
 ]
 
 [build-system]
@@ -47,10 +47,11 @@ exclude = [
     "buck-out",
     "build",
     "dist",
-    ".venv"
+    ".venv",
 ]
 
-line-length = 120 
+indent-width = 2
+line-length = 120
 
 [tool.ruff.lint.isort]
-known-first-party = ["src"] 
+known-first-party = ["src"]
