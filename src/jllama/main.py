@@ -3,18 +3,20 @@
 import argparse
 import json
 import jax
+import dataclasses
 from pathlib import Path
 
 from jllama.qwen_model import MLPLayer, hf_to_Config, load_pytree, load_tokenizer
 
 
-def main(path: str | Path, is_test: bool):
+def main(path: str | Path, is_test: str | bool):
   path = Path(path)
   tokenizer = load_tokenizer(path / "tokenizer.json", path / "tokenizer_config.json")
-  if is_test:
-    jax.config.update("jax_num_cpu_devices", 8)
-  mesh = jax.make_mesh((4, 2), ("x", "y"), devices=jax.devices())
-  cfg = hf_to_Config(json.load((path / "config.json").read_text()))
+  if bool(is_test):
+    jax.config.update("jax_num_cpu_devices", 2)
+  mesh = jax.make_mesh((1, 2), ("x", "y"), devices=jax.devices())
+  cfg = hf_to_Config(json.loads((path / "config.json").read_text()))
+  cfg = dataclasses.replace(cfg, mesh=mesh) 
   mlp_layer = load_pytree(path, MLPLayer.initialize_sharding(cfg))
 
 

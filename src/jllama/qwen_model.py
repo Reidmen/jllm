@@ -132,8 +132,15 @@ def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
     # Attention
     causal_attn=True,
     # Mixture-of-Experts
+    moe_ffw_size=_get(hf_config, "moe_intermediate_size", -1),
     moe_experts_per_tok=_get(hf_config, "num_experts_per_tok"),
     moe_num_experts=_get(hf_config, "num_experts"),
+    # Multilayer Perceptron (MLP)
+    mlp_ffw_size=_get(hf_config, "intermediate_size", -1),
+    mlp_layer_idxs=_get(hf_config, "lmp_only_layers", []),
+    # Kernel Config
+    dtype=jnp.bfloat16,
+    norm_eps=_get(hf_config, "rms_norm_eps"),
     # RoPE
     rope_theta=_get(hf_config, "rope_theta"),
   )
@@ -143,10 +150,10 @@ def load_config(config_path: str | Path) -> Config:
   return hf_to_Config(json.loads(Path(config_path).read_text()))
 
 
-def load_tokenizer(tokenizer_path: str | Path) -> "PreTrainedTokenizer":
+def load_tokenizer(tokenizer_path: str | Path, tokenizer_config_path: str | Path) -> "PreTrainedTokenizer":
   from transformers import PreTrainedTokenizerFast, AddedToken
 
-  config = json.loads(Path(tokenizer_path).read_text())
+  config = json.loads(Path(tokenizer_config_path).read_text())
   config = {k: AddedToken(**v) if isinstance(v, dict) and str(k).endswith("token") else v for (k, v) in config.items()}
   config["added_tokens_decoder"] = {
     int(k): AddedToken(**v) for (k, v) in config.get("added_tokens_decoder", dict()).items()
@@ -163,13 +170,15 @@ def logical_to_physical(logical: Axes, rules: ShardingRules) -> jax.sharding.Par
   return PartitionSpec(*spec)
 
 
-def logical_to_sharding(logical: Axes, mesh: jax.sharding.Mesh, rules: ShardingRules) -> jax.sharding.Sharding:
+def logical_to_sharding(logical: Axes, mesh: jax.sharding.Mesh, rules: ShardingRules) -> jax.sharding.NamedSharding:
+  if mesh is None:
+    raise ValueError
   return jax.sharding.NamedSharding(mesh, logical_to_physical(logical, rules))
 
 
 def register_pytree_struct(cls, meta_fields: tuple = ()):
   """jax.tree_util.register_dataclass wrapper for automatic data_field inference"""
-  if not dataclasses.is_dataclass(cls):
+  if dataclasses.is_dataclass(cls):
     raise TypeError
   cls = dataclasses.dataclass(cls)
   all_fields = tuple(f.name for f in dataclasses.fields(cls) if f.init)
