@@ -143,6 +143,17 @@ def load_config(config_path: str | Path) -> Config:
   return hf_to_Config(json.loads(Path(config_path).read_text()))
 
 
+def load_tokenizer(tokenizer_path: str | Path) -> "PreTrainedTokenizer":
+  from transformers import PreTrainedTokenizerFast, AddedToken
+
+  config = json.loads(Path(tokenizer_path).read_text())
+  config = {k: AddedToken(**v) if isinstance(v, dict) and str(k).endswith("token") else v for (k, v) in config.items()}
+  config["added_tokens_decoder"] = {
+    int(k): AddedToken(**v) for (k, v) in config.get("added_tokens_decoder", dict()).items()
+  }
+  return PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_path), **config)
+
+
 def logical_to_physical(logical: Axes, rules: ShardingRules) -> jax.sharding.PartitionSpec:
   """Map from logical axes to physical mesh axes"""
   spec = [getattr(rules, axis) if axis is not None else None for axis in logical]
