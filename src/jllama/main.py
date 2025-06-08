@@ -17,7 +17,8 @@ def main(path: str | Path, is_test: str | bool):
   mesh = jax.make_mesh((1, 2), ("x", "y"), devices=jax.devices())
   cfg = hf_to_Config(json.loads((path / "config.json").read_text()))
   cfg = dataclasses.replace(cfg, mesh=mesh) 
-  mlp_layer = load_pytree(path, MLPLayer.initialize_sharding(cfg))
+  init_sharded = MLPLayer.initialize_sharding(cfg)
+  # mlp_layer = load_pytree(path, init_sharded)
 
 
 if __name__ == "__main__":

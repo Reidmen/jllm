@@ -37,19 +37,17 @@ def load_pytree(path: str | Path, sharding: jax.sharding.Sharding | None = None)
   restore_args = jax.tree.map(lambda s: ochkpt.ArrayRestoreArgs(sharding=s), sharding)
   with ochkpt.PyTreeCheckpointer() as chkptr:
     return chkptr.restore(
-      Path(path), args=ochkpt.args.PyTreeRestore(item=item, transforms=transform, restore_args=restore_args)
+      Path(path).absolute(), args=ochkpt.args.PyTreeRestore(item=item, transforms=transform, restore_args=restore_args)
     )
 
 
 # Physical mesh axis names for readability
 # x - batch dimension
 # y - 1st of 2D tensor sharding
-# z - 2nd of 2D tensor sharding
 BATCH_AXIS_NAME = "x"
-EXPERT_AXIS_NAME = "z"
-TENSOR_ONLY_AXIS_NAME = "y"
-
-TENSOR_AXIS_NAMES = ("y", "z")
+TENSOR_AXIS_NAME = "y"
+ATTN_HEADS_AXIS_NAME = "y"
+EXPERT_AXIS_NAME = "y"
 
 AxisName = str | tuple[str, ...] | None
 Axes = tuple[AxisName, ...]
@@ -68,12 +66,23 @@ class ShardingRules:
   This allows easy use of sharding strategies by just changing the mapping.
   """
 
-  # General
   batch: AxisName = BATCH_AXIS_NAME
   sequence: AxisName = None
+  # General
   act_embed: AxisName = None
   act_heads: AxisName = None
   head_dim: AxisName = None
+  # Attention
+  qkv_embed: AxisName = None
+  q_heads: AxisName = ATTN_HEADS_AXIS_NAME
+  kv_heads: AxisName = ATTN_HEADS_AXIS_NAME
+  o_heads: AxisName = ATTN_HEADS_AXIS_NAME
+  o_embed: AxisName = None
+  # MLP layer
+  mlp_up_embed: AxisName = None
+  mlp_up_ffw: AxisName = TENSOR_AXIS_NAME
+  mlp_down_ffw: AxisName = TENSOR_AXIS_NAME
+  mlp_down_embed: AxisName = None
 
 
 @static_compatible_dataclass
@@ -197,7 +206,7 @@ class ArrayInfo:
 
 # Friendly isinstance checks
 is_type = lambda x, cls: (type(x).__name__ == cls.__name__) and (type(x).__module__ == cls.__module__)
-is_param = lambda x: is_type(x, jax.Array)
+is_param = lambda x: is_type(x, ArrayInfo)
 
 
 class ShardingBase:
