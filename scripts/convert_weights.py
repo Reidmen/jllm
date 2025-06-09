@@ -2,25 +2,24 @@ from pathlib import Path
 import argparse
 import shutil
 
-
 def main(model_path: str | Path, chkpt_path: str | Path):
-  from jllama.qwen_model import MLPLayer, hf_to_Config
+  from jllama.qwen_model import MLPLayer, Weights, hf_to_Config, save_pytree
+  from jllama.qwen_utils import convert_model_weights
   from transformers import AutoConfig
   from safetensors import safe_open
   from tqdm import tqdm
 
   model_path, chkpt_path = Path(model_path), Path(chkpt_path)
-  chkpt_path.mkdir(parents=True, exist_ok=True)
   files = list(model_path.glob("**/*safetensors"))
-  if len(files) < 2:
+  if len(files) < 1:
     raise FileNotFoundError  # config and safetensors must exist
   config_files = list(model_path.glob("**/config.json"))
   assert len(config_files) == 1, "Only one config.json file allowed."
   config = AutoConfig.from_pretrained(config_files[0])
   cfg = hf_to_Config(config)
 
-  # Load layer weights. TODO: Quantized version
-  mlp_layer = MLPLayer.initialize(cfg)
+  # Load weights. TODO: Quantized version
+  weights = Weights.initialize(cfg)
 
   if not chkpt_path.exists():
     model = {}
@@ -29,8 +28,8 @@ def main(model_path: str | Path, chkpt_path: str | Path):
         for key in tqdm(f.keys(), leave=False):
           model[key] = f.get_tensor(key)
 
-    # compatible_weights = utils.convert_model_or_layer(mlp_layer, model, cfg, sequential=False)
-    # save_pytree(compatible_weights, chk_path)
+    compatible_weights = convert_model_weights(weights, model, cfg) 
+    save_pytree(compatible_weights, chkpt_path)
 
   additional_files = ["config.json", "tokenizer.json", "tokenizer_config.json"]
   for additional_file in additional_files:

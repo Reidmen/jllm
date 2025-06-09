@@ -83,6 +83,9 @@ class ShardingRules:
   mlp_up_ffw: AxisName = TENSOR_AXIS_NAME
   mlp_down_ffw: AxisName = TENSOR_AXIS_NAME
   mlp_down_embed: AxisName = None
+  # Vocab
+  vocab_in: AxisName = None
+  vocab_out: AxisName = TENSOR_AXIS_NAME
 
 
 @static_compatible_dataclass
@@ -243,3 +246,20 @@ class MLPLayer(ShardingBase):
       w_down=ArrayInfo((cfg.mlp_ffw_size, cfg.embed_size), cfg.dtype, ("mlp_down_ffw", "mlp_down_embed"), _init(1)),
     )
     return layer
+
+
+@register_pytree_struct
+class Weights(ShardingBase):
+  embedding: jax.Array | ArrayInfo
+  gamma_final: jax.Array | ArrayInfo
+  lm_head: jax.Array | ArrayInfo
+
+  @classmethod
+  def initialize(cls, cfg: Config):
+    _init = lambda in_axis, out_axis: jax.nn.initializers.he_normal(in_axis=in_axis, out_axis=out_axis)
+    return Weights(
+      embedding=ArrayInfo((cfg.vocab_size, cfg.embed_size), cfg.dtype, ("vocab_in", "vocab_in"), _init(0, 1)),
+      gamma_final=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
+      lm_head=ArrayInfo((cfg.embed_size, cfg.vocab_size), cfg.dtype, ("vocab_in", "vocab_out"), _init(0,1))
+    )
+

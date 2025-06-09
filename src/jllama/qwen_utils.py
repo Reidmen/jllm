@@ -14,7 +14,7 @@ try:
 except ModuleNotFoundError:
   raise ImportError(f"torch required for {__file__}")
 
-from jllama.qwen_model import ArrayInfo, Config, MLPLayer
+from jllama.qwen_model import ArrayInfo, Config, MLPLayer, Weights
 
 is_leaf = lambda x: isinstance(x, ArrayInfo)
 jax_to_torch = lambda x: torch.from_dlpack(x)
@@ -36,12 +36,43 @@ def _index_to_str(x):
       return str(getattr(x, field))
   raise ValueError
 
+_HF_KEY_MAPPING = {
+  # Embedding
+    r"model\.embed_tokens\.weight": "embedding",
+  # Attention 
+    r"model\.layers\.([0-9]+)\.self_attn\.q_proj\.weight": r"layers.\1.attn.q",
+    r"model\.layers\.([0-9]+)\.self_attn\.k_proj\.weight": r"layers.\1.attn.k",
+    r"model\.layers\.([0-9]+)\.self_attn\.v_proj\.weight": r"layers.\1.attn.v",
+    r"model\.layers\.([0-9]+)\.self_attn\.o_proj\.weight": r"layers.\1.attn.o",
+    # Attention -- norms
+    r"model\.layers\.([0-9]+)\.self_attn\.q_norm\.weight": r"layers.\1.attn.q_gamma",
+    r"model\.layers\.([0-9]+)\.self_attn\.k_norm\.weight": r"layers.\1.attn.k_gamma",
+     # Layer norm (pre/post attention)
+    r"model\.layers\.([0-9]+)\.input_layernorm\.weight": r"layers.\1.attn_pre_gamma",
+    r"model\.layers\.([0-9]+)\.post_attention_layernorm\.weight": r"layers.\1.attn_post_gamma",
+     # MoE router
+    r"model\.layers\.([0-9]+)\.mlp\.gate\.weight": r"layers.\1.ffw.w_router",
+     # MoE experts
+    r"model\.layers\.([0-9]+)\.mlp\.experts\.gate_proj\.weight": r"layers.\1.ffw.we_gate",
+    r"model\.layers\.([0-9]+)\.mlp\.experts\.up_proj\.weight": r"layers.\1.ffw.we_up",
+    r"model\.layers\.([0-9]+)\.mlp\.experts\.down_proj\.weight": r"layers.\1.ffw.we_down",
+     # MLP 
+    r"model\.layers\.([0-9]+)\.mlp\.gate_proj\.weight": r"layers.\1.ffw.w_gate",
+    r"model\.layers\.([0-9]+)\.mlp\.up_proj\.weight": r"layers.\1.ffw.w_up",
+    r"model\.layers\.([0-9]+)\.mlp\.down_proj\.weight": r"layers.\1.ffw.w_down",
+    # MLP -- norms
+    r"model\.norm\.weight": "gamma_final",
+    # ML head
+    r"lm_head\.weight": "lm_head",
+}
+
+
 def convert_weight(key: str, value: torch.Tensor, cfg: Config):
   """Preserves HF checkpoint naming convention"""
   value = value.detach()
   # Attention 
   if re.search(r"q_proj\.weight", key) is not None:
-    assert value.shape == (cfg.embed_size * cfg.head_dim, cfg.head_dim)
+    assert value.shape == (cfg.q_heads* cfg.head_dim, cfg.embed_size)
     return torch_to_jax(value.T.reshape((cfg.embed_size, cfg.q_heads, cfg.head_dim)))
   elif re.search(r"[kv]_proj\.weight", key) is not None:
     assert value.shape == (cfg.kv_heads * cfg.head_dim, cfg.embed_size)
@@ -49,6 +80,16 @@ def convert_weight(key: str, value: torch.Tensor, cfg: Config):
   elif re.search(r"o_proj\.weight", key) is not None:
     assert value.shape == (cfg.embed_size, cfg.q_heads * cfg.head_dim)
     return torch_to_jax(value.T.reshape((cfg.q_heads, cfg.head_dim, cfg.embed_size)))
+  # MoE
+  elif re.search(r"gate\.weight", key) is not None:
+    assert value.shape == (cfg.moe_num_experts, cfg.embed_size)
+    return torch_to_jax(value.T)
+  elif re.search(r"experts\.down_proj", key) is not None:
+    assert value.shape == (cfg.moe_num_experts, cfg.embed_size, cfg.moe_ffw_size)
+    return torch_to_jax(value.permute((0, 2, 1)))
+  elif re.search(r"experts\.(gate|up)_proj", key) is not None:
+    assert value.shape == (cfg.moe_num_experts, cfg.moe_ffw_size, cfg.embed_size)
+    return torch_to_jax(value.permute((0, 2, 1)))
   # MLP
   elif re.search(r"down_proj", key) is not None:
     assert value.shape == (cfg.embed_size, cfg.mlp_ffw_size)
@@ -56,11 +97,43 @@ def convert_weight(key: str, value: torch.Tensor, cfg: Config):
   elif re.search(r"(gate|up)_proj", key) is not None:
     assert value.shape == (cfg.mlp_ffw_size, cfg.embed_size)
     return torch_to_jax(value.T)
+  # Others
+  elif re.search(r"embed_tokens", key) is not None:
+    assert value.shape == (cfg.vocab_size, cfg.embed_size)
+    return torch_to_jax(value)
+  elif re.search(r"lm_head", key) is not None:
+    assert value.shape == (cfg.vocab_size, cfg.embed_size)
+    return torch_to_jax(value.T)
+  elif re.search(r"(q|k)_norm", key) is not None:
+    assert value.shape == (cfg.head_dim,)
+    return torch_to_jax(value.T)
+  elif re.search(r"layernorm", key) is not None:
+    assert value.shape == (cfg.embed_size,)
+    return torch_to_jax(value)
+  elif re.search(r"norm", key) is not None:
+    assert value.shape == (cfg.embed_size,)
+    return torch_to_jax(value)
   else:
-    raise ValueError(f"Unknown weight {key}")  
+    raise ValueError(f"Unknown weight {key=}")
+
+def _torch_to_jax_key(source_key, custom_key_map: dict[str, str] | None = None):
+  key_maps = dict(_HF_KEY_MAPPING, **(dict() if custom_key_map is None else custom_key_map))
+  subs = [re.sub(pat, repl, source_key) for pat, repl in key_maps.items() if re.match(pat, source_key)]
+  if len(subs) > 1:
+    raise ValueError(f"More than 1 key matched {subs}")
+  else:
+    return None if len(subs) == 0 else subs[0]
+
+def _map_weight(source_key, value: torch.Tensor, custom_transform_map: dict[str, callable] | None = None): 
+  key_maps = dict(dict(), **(dict() if custom_transform_map is None else custom_transform_map))
+  fns = {pat: fn for pat, fn in key_maps.items() if re.match(pat, source_key)}
+  if len(fns) > 1:
+    raise ValueError(f"More than 1 key matched {fns}")
+  else:
+    return value if len(fns) == 0 else list(fns.values())[0](value) 
 
 def convert_model_weights(
-  layer: MLPLayer, reference_layer: torch.nn.Module, cfg: Config, device: jax.Device | None = None
+  layer: MLPLayer | Weights, reference_layer: torch.nn.Module, cfg: Config, device: jax.Device | None = None
 ):
   device = device if device is not None else jax.devices("cpu")[0]
   torch_params = dict(
@@ -74,14 +147,14 @@ def convert_model_weights(
 
   def convert_weight_per_thread(tkey, tweight):
     with jax.default_device(device):
-      jweight = convert_weight(tkey, _map_weight(tkey, tweight), cfg)
+      jweight = convert_weight(tkey, tweight, cfg)
     jkey = _torch_to_jax_key(tkey)
     if jkey is None:
       raise ValueError(f"Could not find parameter mapping for torch parameter: {tkey}")
-    if jkey is not in new_params:
-      raise ValueError(f"The JAX model is not expecting {jkey}")
-    if new_params[jkey] is not None:
-      raise ValueError(f"Parameter {jkey} already exist!")
+    # if jkey not in new_params:
+    #   raise ValueError(f"The JAX model is not expecting {jkey}") # Only for full model
+    # if new_params[jkey] is not None:
+    #   raise ValueError(f"Parameter {jkey} already exist!")
     new_params[jkey] = jweight
 
   # TODO: multithread version 
