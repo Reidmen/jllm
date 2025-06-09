@@ -15,7 +15,6 @@ from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_ke
 from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_mask
 from jax.experimental.shard_map import shard_map
 from jax.sharding import PartitionSpec, use_mesh
-from etils import epath
 
 from typing import Any
 
@@ -24,20 +23,20 @@ OCDBT_TARGET_SIZE = 1024 * 1024 * 1024
 
 # (de)-serialization functions
 def save_pytree(data, path: Path):
-  import orbax.checkpoint as ochkpt
+  import orbax.checkpoint as ocp 
 
-  with ochkpt.PyTreeCheckpointer() as chkptr:
-    chkptr.save(Path(path), data, ochkpt.args.PyTreeSave(data, ocdbt_target_data_file_size=OCDBT_TARGET_SIZE))
+  with ocp.PyTreeCheckpointer() as chkptr:
+    chkptr.save(Path(path), data, ocp.args.PyTreeSave(data, ocdbt_target_data_file_size=OCDBT_TARGET_SIZE))
 
 
 def load_pytree(path: str | Path, sharding: jax.sharding.Sharding | None = None):
-  import orbax.checkpoint as ochkpt
+  import orbax.checkpoint as ocp 
 
   item, transform = sharding, None
-  restore_args = jax.tree.map(lambda s: ochkpt.ArrayRestoreArgs(sharding=s), sharding)
-  with ochkpt.PyTreeCheckpointer() as chkptr:
+  restore_args = jax.tree.map(lambda s: ocp.ArrayRestoreArgs(sharding=s), sharding)
+  with ocp.PyTreeCheckpointer() as chkptr:
     return chkptr.restore(
-      Path(path).absolute(), args=ochkpt.args.PyTreeRestore(item=item, transforms=transform, restore_args=restore_args)
+      Path(path).absolute(), args=ocp.args.PyTreeRestore(item=item, transforms=transform, restore_args=restore_args)
     )
 
 
@@ -198,7 +197,7 @@ def register_pytree_struct(cls, meta_fields: tuple = ()):
   return tree_util.register_dataclass(cls, data_fields=data_fields, meta_fields=meta_fields)
 
 
-@partial(register_pytree_struct, meta_fields=("shape", "logical_axes", "metadata"))
+@partial(register_pytree_struct, meta_fields=("shape", "logical_axes", "initializer", "metadata"))
 class ArrayInfo:
   shape: tuple[int, ...]
   dtype: "jnp.dtype"

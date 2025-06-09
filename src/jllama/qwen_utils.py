@@ -164,7 +164,11 @@ def convert_model_weights(
   if not all(v is not None for v in new_params.values()):
     raise ValueError(str({k: v for k, v in new_params.items() if v is not None}))
 
-  if isinstance(layer, MLPLayer):
+  for (key, param), new_param in zip(layer_params.items(), new_params.values()):
+    if param.shape != new_params.shape:
+      raise ValueError(f"Shape of {key=} does not match, expected {param.shape}, got {new_param.shape}")
+
+  if isinstance(layer, Weights):
     return jax.tree.unflatten(jax.tree.structure(layer, is_leaf=is_leaf), new_params.values())
   else:
     return jax.tree.unflatten(
