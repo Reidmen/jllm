@@ -155,7 +155,9 @@ def convert_model_weights(
     #   raise ValueError(f"The JAX model is not expecting {jkey}") # Only for full model
     # if new_params[jkey] is not None:
     #   raise ValueError(f"Parameter {jkey} already exist!")
-    new_params[jkey] = jweight
+    # new_params[jkey] = jweight
+    if jkey in new_params:
+      new_params[jkey] = jweight
 
   # TODO: multithread version 
   for tkey, tweight in torch_params.items():
@@ -165,7 +167,7 @@ def convert_model_weights(
     raise ValueError(str({k: v for k, v in new_params.items() if v is not None}))
 
   for (key, param), new_param in zip(layer_params.items(), new_params.values()):
-    if param.shape != new_params.shape:
+    if param.shape != new_param.shape:
       raise ValueError(f"Shape of {key=} does not match, expected {param.shape}, got {new_param.shape}")
 
   if isinstance(layer, Weights):

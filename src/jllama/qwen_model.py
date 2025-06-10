@@ -26,7 +26,7 @@ def save_pytree(data, path: Path):
   import orbax.checkpoint as ocp 
 
   with ocp.PyTreeCheckpointer() as chkptr:
-    chkptr.save(Path(path), data, ocp.args.PyTreeSave(data, ocdbt_target_data_file_size=OCDBT_TARGET_SIZE))
+    chkptr.save(Path(path).absolute(), data, ocp.args.PyTreeSave(data, ocdbt_target_data_file_size=OCDBT_TARGET_SIZE))
 
 
 def load_pytree(path: str | Path, sharding: jax.sharding.Sharding | None = None):
