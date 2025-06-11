@@ -14,7 +14,7 @@ try:
 except ModuleNotFoundError:
   raise ImportError(f"torch required for {__file__}")
 
-from jllama.qwen_model import ArrayInfo, Config, MLPLayer, Weights
+from jllama.qwen_model import ArrayInfo, Config, Layer, MLPLayer, Weights
 
 is_leaf = lambda x: isinstance(x, ArrayInfo)
 jax_to_torch = lambda x: torch.from_dlpack(x)
@@ -133,7 +133,7 @@ def _map_weight(source_key, value: torch.Tensor, custom_transform_map: dict[str,
     return value if len(fns) == 0 else list(fns.values())[0](value) 
 
 def convert_model_weights(
-  layer: MLPLayer | Weights, reference_layer: torch.nn.Module, cfg: Config, device: jax.Device | None = None
+  layer: MLPLayer | Layer | Weights, reference_layer: torch.nn.Module, cfg: Config, device: jax.Device | None = None
 ):
   device = device if device is not None else jax.devices("cpu")[0]
   torch_params = dict(

@@ -246,9 +246,25 @@ class MLPLayer(ShardingBase):
     )
     return layer
 
+  
+
+@register_pytree_struct
+class Layer(ShardingBase):
+  ffw: MLPLayer # TODO: MoELayer & Attention
+  attn_pre_gamma: jax.Array | ArrayInfo
+  attn_post_gamma: jax.Array | ArrayInfo
+
+  @classmethod
+  def initialize(cls, cfg: Config, layer_idx: int) -> "Layer":
+    return Layer(
+      ffw=MLPLayer.initialize(cfg),
+      attn_pre_gamma=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
+      attn_post_gamma=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0))
+    )
 
 @register_pytree_struct
 class Weights(ShardingBase):
+  layers: list[Layer]
   embedding: jax.Array | ArrayInfo
   gamma_final: jax.Array | ArrayInfo
   lm_head: jax.Array | ArrayInfo
@@ -257,6 +273,7 @@ class Weights(ShardingBase):
   def initialize(cls, cfg: Config):
     _init = lambda in_axis, out_axis: jax.nn.initializers.he_normal(in_axis=in_axis, out_axis=out_axis)
     return Weights(
+      layers= [Layer.initialize(cfg, layer_idx) for layer_idx in range(cfg.num_layers)],
       embedding=ArrayInfo((cfg.vocab_size, cfg.embed_size), cfg.dtype, ("vocab_in", "vocab_in"), _init(0, 1)),
       gamma_final=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
       lm_head=ArrayInfo((cfg.embed_size, cfg.vocab_size), cfg.dtype, ("vocab_in", "vocab_out"), _init(0,1))

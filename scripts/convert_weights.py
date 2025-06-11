@@ -3,7 +3,7 @@ import argparse
 import shutil
 
 def main(model_path: str | Path, chkpt_path: str | Path):
-  from jllama.qwen_model import MLPLayer, Weights, hf_to_Config, save_pytree
+  from jllama.qwen_model import Weights, hf_to_Config, save_pytree
   from jllama.qwen_utils import convert_model_weights
   from transformers import AutoConfig
   from safetensors import safe_open
