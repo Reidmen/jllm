@@ -1,5 +1,5 @@
 [project]
-name = "jllama"
+name = "jllm"
 version = "0.1.0"
 # NOTE: split between CPU, GPU, TPU 
 dependencies = [
@@ -24,7 +24,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["jllama"]
+include = ["jllm"]
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.

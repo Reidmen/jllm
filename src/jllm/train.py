@@ -86,8 +86,8 @@ def train_step(
 
 
 if __name__ == "__main__":
-  from jllama.gpt import GPTLikeModel
-  from jllama.utils import ModelArgs
+  from jllm.gpt import GPTLikeModel
+  from jllm.utils import ModelArgs
 
   model = GPTLikeModel(
     args=ModelArgs(),

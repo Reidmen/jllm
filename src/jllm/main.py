@@ -6,7 +6,7 @@ import jax
 import dataclasses
 from pathlib import Path
 
-from jllama.qwen_model import MLPLayer, hf_to_Config, load_pytree, load_tokenizer
+from jllm.qwen_model import MLPLayer, hf_to_Config, load_pytree, load_tokenizer
 
 
 def main(path: str | Path, is_test: str | bool):

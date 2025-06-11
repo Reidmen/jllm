@@ -1,7 +1,7 @@
 import pytest
 import jax
-from jllama.utils import ModelArgs
-from jllama.gpt import Attention, MultiHeadAttention, FeedForward, TransformerBlock, GPTLikeModel
+from jllm.utils import ModelArgs
+from jllm.gpt import Attention, MultiHeadAttention, FeedForward, TransformerBlock, GPTLikeModel
 
 
 # Define model args for testing

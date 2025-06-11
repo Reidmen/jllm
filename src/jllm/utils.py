@@ -3,8 +3,8 @@
 
 from jaxtyping import PyTree
 import torch  # type: ignore
-from jllama.llama_model import LlamaConfig, Llama3ForCausalLM
-from jllama.tokenizer import Tokenizer
+from jllm.llama_model import LlamaConfig, Llama3ForCausalLM
+from jllm.tokenizer import Tokenizer
 from dataclasses import dataclass
 from pathlib import Path
 import json

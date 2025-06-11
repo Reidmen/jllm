@@ -3,7 +3,7 @@
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
-from jllama.utils import ModelArgs
+from jllm.utils import ModelArgs
 
 
 class Attention(nn.Module):
