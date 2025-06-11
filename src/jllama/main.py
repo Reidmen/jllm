@@ -16,7 +16,7 @@ def main(path: str | Path, is_test: str | bool):
     jax.config.update("jax_num_cpu_devices", 2)
   mesh = jax.make_mesh((1, 2), ("x", "y"), devices=jax.devices())
   cfg = hf_to_Config(json.loads((path / "config.json").read_text()))
-  cfg = dataclasses.replace(cfg, mesh=mesh) 
+  cfg = dataclasses.replace(cfg, mesh=mesh)
   init_sharded = MLPLayer.initialize_sharding(cfg)
   # mlp_layer = load_pytree(path, init_sharded)
 

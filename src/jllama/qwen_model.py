@@ -23,14 +23,14 @@ OCDBT_TARGET_SIZE = 1024 * 1024 * 1024
 
 # (de)-serialization functions
 def save_pytree(data, path: Path):
-  import orbax.checkpoint as ocp 
+  import orbax.checkpoint as ocp
 
   with ocp.PyTreeCheckpointer() as chkptr:
     chkptr.save(Path(path).absolute(), data, ocp.args.PyTreeSave(data, ocdbt_target_data_file_size=OCDBT_TARGET_SIZE))
 
 
 def load_pytree(path: str | Path, sharding: jax.sharding.Sharding | None = None):
-  import orbax.checkpoint as ocp 
+  import orbax.checkpoint as ocp
 
   item, transform = sharding, None
   restore_args = jax.tree.map(lambda s: ocp.ArrayRestoreArgs(sharding=s), sharding)
@@ -246,11 +246,10 @@ class MLPLayer(ShardingBase):
     )
     return layer
 
-  
 
 @register_pytree_struct
 class Layer(ShardingBase):
-  ffw: MLPLayer # TODO: MoELayer & Attention
+  ffw: MLPLayer  # TODO: MoELayer & Attention
   attn_pre_gamma: jax.Array | ArrayInfo
   attn_post_gamma: jax.Array | ArrayInfo
 
@@ -259,8 +258,9 @@ class Layer(ShardingBase):
     return Layer(
       ffw=MLPLayer.initialize(cfg),
       attn_pre_gamma=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
-      attn_post_gamma=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0))
+      attn_post_gamma=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
     )
+
 
 @register_pytree_struct
 class Weights(ShardingBase):
@@ -273,9 +273,8 @@ class Weights(ShardingBase):
   def initialize(cls, cfg: Config):
     _init = lambda in_axis, out_axis: jax.nn.initializers.he_normal(in_axis=in_axis, out_axis=out_axis)
     return Weights(
-      layers= [Layer.initialize(cfg, layer_idx) for layer_idx in range(cfg.num_layers)],
+      layers=[Layer.initialize(cfg, layer_idx) for layer_idx in range(cfg.num_layers)],
       embedding=ArrayInfo((cfg.vocab_size, cfg.embed_size), cfg.dtype, ("vocab_in", "vocab_in"), _init(0, 1)),
       gamma_final=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
-      lm_head=ArrayInfo((cfg.embed_size, cfg.vocab_size), cfg.dtype, ("vocab_in", "vocab_out"), _init(0,1))
+      lm_head=ArrayInfo((cfg.embed_size, cfg.vocab_size), cfg.dtype, ("vocab_in", "vocab_out"), _init(0, 1)),
     )
-

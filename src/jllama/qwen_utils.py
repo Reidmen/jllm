@@ -36,43 +36,44 @@ def _index_to_str(x):
       return str(getattr(x, field))
   raise ValueError
 
+
 _HF_KEY_MAPPING = {
   # Embedding
-    r"model\.embed_tokens\.weight": "embedding",
-  # Attention 
-    r"model\.layers\.([0-9]+)\.self_attn\.q_proj\.weight": r"layers.\1.attn.q",
-    r"model\.layers\.([0-9]+)\.self_attn\.k_proj\.weight": r"layers.\1.attn.k",
-    r"model\.layers\.([0-9]+)\.self_attn\.v_proj\.weight": r"layers.\1.attn.v",
-    r"model\.layers\.([0-9]+)\.self_attn\.o_proj\.weight": r"layers.\1.attn.o",
-    # Attention -- norms
-    r"model\.layers\.([0-9]+)\.self_attn\.q_norm\.weight": r"layers.\1.attn.q_gamma",
-    r"model\.layers\.([0-9]+)\.self_attn\.k_norm\.weight": r"layers.\1.attn.k_gamma",
-     # Layer norm (pre/post attention)
-    r"model\.layers\.([0-9]+)\.input_layernorm\.weight": r"layers.\1.attn_pre_gamma",
-    r"model\.layers\.([0-9]+)\.post_attention_layernorm\.weight": r"layers.\1.attn_post_gamma",
-     # MoE router
-    r"model\.layers\.([0-9]+)\.mlp\.gate\.weight": r"layers.\1.ffw.w_router",
-     # MoE experts
-    r"model\.layers\.([0-9]+)\.mlp\.experts\.gate_proj\.weight": r"layers.\1.ffw.we_gate",
-    r"model\.layers\.([0-9]+)\.mlp\.experts\.up_proj\.weight": r"layers.\1.ffw.we_up",
-    r"model\.layers\.([0-9]+)\.mlp\.experts\.down_proj\.weight": r"layers.\1.ffw.we_down",
-     # MLP 
-    r"model\.layers\.([0-9]+)\.mlp\.gate_proj\.weight": r"layers.\1.ffw.w_gate",
-    r"model\.layers\.([0-9]+)\.mlp\.up_proj\.weight": r"layers.\1.ffw.w_up",
-    r"model\.layers\.([0-9]+)\.mlp\.down_proj\.weight": r"layers.\1.ffw.w_down",
-    # MLP -- norms
-    r"model\.norm\.weight": "gamma_final",
-    # ML head
-    r"lm_head\.weight": "lm_head",
+  r"model\.embed_tokens\.weight": "embedding",
+  # Attention
+  r"model\.layers\.([0-9]+)\.self_attn\.q_proj\.weight": r"layers.\1.attn.q",
+  r"model\.layers\.([0-9]+)\.self_attn\.k_proj\.weight": r"layers.\1.attn.k",
+  r"model\.layers\.([0-9]+)\.self_attn\.v_proj\.weight": r"layers.\1.attn.v",
+  r"model\.layers\.([0-9]+)\.self_attn\.o_proj\.weight": r"layers.\1.attn.o",
+  # Attention -- norms
+  r"model\.layers\.([0-9]+)\.self_attn\.q_norm\.weight": r"layers.\1.attn.q_gamma",
+  r"model\.layers\.([0-9]+)\.self_attn\.k_norm\.weight": r"layers.\1.attn.k_gamma",
+  # Layer norm (pre/post attention)
+  r"model\.layers\.([0-9]+)\.input_layernorm\.weight": r"layers.\1.attn_pre_gamma",
+  r"model\.layers\.([0-9]+)\.post_attention_layernorm\.weight": r"layers.\1.attn_post_gamma",
+  # MoE router
+  r"model\.layers\.([0-9]+)\.mlp\.gate\.weight": r"layers.\1.ffw.w_router",
+  # MoE experts
+  r"model\.layers\.([0-9]+)\.mlp\.experts\.gate_proj\.weight": r"layers.\1.ffw.we_gate",
+  r"model\.layers\.([0-9]+)\.mlp\.experts\.up_proj\.weight": r"layers.\1.ffw.we_up",
+  r"model\.layers\.([0-9]+)\.mlp\.experts\.down_proj\.weight": r"layers.\1.ffw.we_down",
+  # MLP
+  r"model\.layers\.([0-9]+)\.mlp\.gate_proj\.weight": r"layers.\1.ffw.w_gate",
+  r"model\.layers\.([0-9]+)\.mlp\.up_proj\.weight": r"layers.\1.ffw.w_up",
+  r"model\.layers\.([0-9]+)\.mlp\.down_proj\.weight": r"layers.\1.ffw.w_down",
+  # MLP -- norms
+  r"model\.norm\.weight": "gamma_final",
+  # ML head
+  r"lm_head\.weight": "lm_head",
 }
 
 
 def convert_weight(key: str, value: torch.Tensor, cfg: Config):
   """Preserves HF checkpoint naming convention"""
   value = value.detach()
-  # Attention 
+  # Attention
   if re.search(r"q_proj\.weight", key) is not None:
-    assert value.shape == (cfg.q_heads* cfg.head_dim, cfg.embed_size)
+    assert value.shape == (cfg.q_heads * cfg.head_dim, cfg.embed_size)
     return torch_to_jax(value.T.reshape((cfg.embed_size, cfg.q_heads, cfg.head_dim)))
   elif re.search(r"[kv]_proj\.weight", key) is not None:
     assert value.shape == (cfg.kv_heads * cfg.head_dim, cfg.embed_size)
@@ -116,6 +117,7 @@ def convert_weight(key: str, value: torch.Tensor, cfg: Config):
   else:
     raise ValueError(f"Unknown weight {key=}")
 
+
 def _torch_to_jax_key(source_key, custom_key_map: dict[str, str] | None = None):
   key_maps = dict(_HF_KEY_MAPPING, **(dict() if custom_key_map is None else custom_key_map))
   subs = [re.sub(pat, repl, source_key) for pat, repl in key_maps.items() if re.match(pat, source_key)]
@@ -124,13 +126,15 @@ def _torch_to_jax_key(source_key, custom_key_map: dict[str, str] | None = None):
   else:
     return None if len(subs) == 0 else subs[0]
 
-def _map_weight(source_key, value: torch.Tensor, custom_transform_map: dict[str, callable] | None = None): 
+
+def _map_weight(source_key, value: torch.Tensor, custom_transform_map: dict[str, callable] | None = None):
   key_maps = dict(dict(), **(dict() if custom_transform_map is None else custom_transform_map))
   fns = {pat: fn for pat, fn in key_maps.items() if re.match(pat, source_key)}
   if len(fns) > 1:
     raise ValueError(f"More than 1 key matched {fns}")
   else:
-    return value if len(fns) == 0 else list(fns.values())[0](value) 
+    return value if len(fns) == 0 else list(fns.values())[0](value)
+
 
 def convert_model_weights(
   layer: MLPLayer | Layer | Weights, reference_layer: torch.nn.Module, cfg: Config, device: jax.Device | None = None
@@ -159,10 +163,10 @@ def convert_model_weights(
     if jkey in new_params:
       new_params[jkey] = jweight
 
-  # TODO: multithread version 
+  # TODO: multithread version
   for tkey, tweight in torch_params.items():
     convert_weight_per_thread(tkey, tweight)
-  
+
   if not all(v is not None for v in new_params.values()):
     raise ValueError(str({k: v for k, v in new_params.items() if v is not None}))
 
@@ -178,5 +182,5 @@ def convert_model_weights(
       [
         new_param if new_param is None else param
         for (new_param, param) in zip(new_params.values(), layer_params.values())
-      ]
+      ],
     )

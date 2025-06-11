@@ -2,6 +2,7 @@ from pathlib import Path
 import argparse
 import shutil
 
+
 def main(model_path: str | Path, chkpt_path: str | Path):
   from jllama.qwen_model import Weights, hf_to_Config, save_pytree
   from jllama.qwen_utils import convert_model_weights
@@ -28,7 +29,7 @@ def main(model_path: str | Path, chkpt_path: str | Path):
         for key in tqdm(f.keys(), leave=False):
           model[key] = f.get_tensor(key)
 
-    compatible_weights = convert_model_weights(weights, model, cfg) 
+    compatible_weights = convert_model_weights(weights, model, cfg)
     save_pytree(compatible_weights, chkpt_path)
 
   additional_files = ["config.json", "tokenizer.json", "tokenizer_config.json"]
@@ -48,13 +49,13 @@ if __name__ == "__main__":
     "--hf_model_path",
     required=False,
     default="./hf_models/Qwen--Qwen3-0.6B",
-    help="HuggingFace model path e.g. ./hf_models/Qwen--Qwen3-0.6B"
+    help="HuggingFace model path e.g. ./hf_models/Qwen--Qwen3-0.6B",
   )
   parser.add_argument(
     "--jax_model_path",
     required=False,
     default="./jax_models/Qwen--Qwen3-0.6B",
-    help="Destination path for jax-compatible model"
+    help="Destination path for jax-compatible model",
   )
   args = parser.parse_args()
   main(args.hf_model_path, args.jax_model_path)
