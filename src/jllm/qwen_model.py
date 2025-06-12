@@ -246,10 +246,31 @@ class MLPLayer(ShardingBase):
     )
     return layer
 
+@register_pytree_struct
+class AttentionLayer(ShardingBase):
+  q: jax.Array | ArrayInfo
+  k: jax.Array | ArrayInfo
+  v: jax.Array | ArrayInfo
+  o: jax.Array | ArrayInfo
+  q_gamma: jax.Array | ArrayInfo
+  k_gamma: jax.Array | ArrayInfo
+
+  @classmethod
+  def initialize(cls, cfg: Config) -> "AttentionLayer":
+    _init = lambda *out_axes: jax.nn.initializers.he_normal(in_axis=0, out_axis=out_axes)
+    return AttentionLayer(
+      q=ArrayInfo((cfg.embed_size, cfg.q_heads, cfg.head_dim), cfg.dtype, ("qkv_embed", "head_dim"), _init(1, 2)),
+      k=ArrayInfo((cfg.embed_size, cfg.kv_heads, cfg.head_dim), cfg.dtype, ("qkv_embed", "head_dim"), _init(1, 2)),
+      v=ArrayInfo((cfg.embed_size, cfg.kv_heads, cfg.head_dim), cfg.dtype, ("qkv_embed", "head_dim"), _init(1, 2)),
+      o=ArrayInfo((cfg.q_heads, cfg.head_dim, cfg.embed_size), cfg.dtype, ("o_heads", "o_embed"), _init(1, 2)),
+      q_gamma=ArrayInfo((cfg.head_dim,), cfg.dtype, ("head_dim",), jax.nn.initializers.ones),
+      k_gamma=ArrayInfo((cfg.head_dim,), cfg.dtype, ("head_dim",), jax.nn.initializers.ones)
+    )
 
 @register_pytree_struct
 class Layer(ShardingBase):
-  ffw: MLPLayer  # TODO: MoELayer & Attention
+  ffw: MLPLayer  # TODO: MoELayer
+  attn: AttentionLayer
   attn_pre_gamma: jax.Array | ArrayInfo
   attn_post_gamma: jax.Array | ArrayInfo
 
@@ -257,6 +278,7 @@ class Layer(ShardingBase):
   def initialize(cls, cfg: Config, layer_idx: int) -> "Layer":
     return Layer(
       ffw=MLPLayer.initialize(cfg),
+      attn=AttentionLayer.initialize(cfg),
       attn_pre_gamma=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
       attn_post_gamma=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
     )

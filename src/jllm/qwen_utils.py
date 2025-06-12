@@ -45,7 +45,7 @@ _HF_KEY_MAPPING = {
   r"model\.layers\.([0-9]+)\.self_attn\.k_proj\.weight": r"layers.\1.attn.k",
   r"model\.layers\.([0-9]+)\.self_attn\.v_proj\.weight": r"layers.\1.attn.v",
   r"model\.layers\.([0-9]+)\.self_attn\.o_proj\.weight": r"layers.\1.attn.o",
-  # Attention -- norms
+  # Attention norms: renamed with suffix gamma
   r"model\.layers\.([0-9]+)\.self_attn\.q_norm\.weight": r"layers.\1.attn.q_gamma",
   r"model\.layers\.([0-9]+)\.self_attn\.k_norm\.weight": r"layers.\1.attn.k_gamma",
   # Layer norm (pre/post attention)
@@ -61,7 +61,7 @@ _HF_KEY_MAPPING = {
   r"model\.layers\.([0-9]+)\.mlp\.gate_proj\.weight": r"layers.\1.ffw.w_gate",
   r"model\.layers\.([0-9]+)\.mlp\.up_proj\.weight": r"layers.\1.ffw.w_up",
   r"model\.layers\.([0-9]+)\.mlp\.down_proj\.weight": r"layers.\1.ffw.w_down",
-  # MLP -- norms
+  # MLP norms: renamed with suffix gamma
   r"model\.norm\.weight": "gamma_final",
   # ML head
   r"lm_head\.weight": "lm_head",
