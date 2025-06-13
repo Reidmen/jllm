@@ -82,6 +82,12 @@ class ShardingRules:
   mlp_up_ffw: AxisName = TENSOR_AXIS_NAME
   mlp_down_ffw: AxisName = TENSOR_AXIS_NAME
   mlp_down_embed: AxisName = None
+  # MoE
+  moe_experts: AxisName = EXPERT_AXIS_NAME
+  moe_up_embed: AxisName = None
+  moe_up_ffw: AxisName = TENSOR_AXIS_NAME
+  moe_down_ffw: AxisName = TENSOR_AXIS_NAME
+  moe_down_embed: AxisName = None
   # Vocab
   vocab_in: AxisName = None
   vocab_out: AxisName = TENSOR_AXIS_NAME
@@ -246,6 +252,7 @@ class MLPLayer(ShardingBase):
     )
     return layer
 
+
 @register_pytree_struct
 class AttentionLayer(ShardingBase):
   q: jax.Array | ArrayInfo
@@ -259,25 +266,69 @@ class AttentionLayer(ShardingBase):
   def initialize(cls, cfg: Config) -> "AttentionLayer":
     _init = lambda *out_axes: jax.nn.initializers.he_normal(in_axis=0, out_axis=out_axes)
     return AttentionLayer(
-      q=ArrayInfo((cfg.embed_size, cfg.q_heads, cfg.head_dim), cfg.dtype, ("qkv_embed", "head_dim"), _init(1, 2)),
-      k=ArrayInfo((cfg.embed_size, cfg.kv_heads, cfg.head_dim), cfg.dtype, ("qkv_embed", "head_dim"), _init(1, 2)),
-      v=ArrayInfo((cfg.embed_size, cfg.kv_heads, cfg.head_dim), cfg.dtype, ("qkv_embed", "head_dim"), _init(1, 2)),
-      o=ArrayInfo((cfg.q_heads, cfg.head_dim, cfg.embed_size), cfg.dtype, ("o_heads", "o_embed"), _init(1, 2)),
+      q=ArrayInfo(
+        (cfg.embed_size, cfg.q_heads, cfg.head_dim), cfg.dtype, ("qkv_embed", "q_heads", "head_dim"), _init(1, 2)
+      ),
+      k=ArrayInfo(
+        (cfg.embed_size, cfg.kv_heads, cfg.head_dim), cfg.dtype, ("qkv_embed", "kv_heads", "head_dim"), _init(1, 2)
+      ),
+      v=ArrayInfo(
+        (cfg.embed_size, cfg.kv_heads, cfg.head_dim), cfg.dtype, ("qkv_embed", "kv_heads", "head_dim"), _init(1, 2)
+      ),
+      o=ArrayInfo(
+        (cfg.q_heads, cfg.head_dim, cfg.embed_size), cfg.dtype, ("o_heads", "head_dim", "o_embed"), _init(1, 2)
+      ),
       q_gamma=ArrayInfo((cfg.head_dim,), cfg.dtype, ("head_dim",), jax.nn.initializers.ones),
-      k_gamma=ArrayInfo((cfg.head_dim,), cfg.dtype, ("head_dim",), jax.nn.initializers.ones)
+      k_gamma=ArrayInfo((cfg.head_dim,), cfg.dtype, ("head_dim",), jax.nn.initializers.ones),
     )
+
+
+@register_pytree_struct
+class MoELayer(ShardingBase):
+  w_router: jax.Array | ArrayInfo  # router
+  we_gate: jax.Array | ArrayInfo  # expert
+  we_up: jax.Array | ArrayInfo  # expert
+  we_down: jax.Array | ArrayInfo  # expert
+
+  @classmethod
+  def initialize(cls, cfg: Config) -> "MoELayer":
+    _einit = jax.nn.initializers.he_normal(in_axis=0, out_axis=(1, 2))
+    _sinit = jax.nn.initializers.he_normal(in_axis=0, out_axis=1)
+    return MoELayer(
+      w_router=ArrayInfo((cfg.embed_size, cfg.moe_num_experts), cfg.moe_gate_dtype, ("moe_up_embed", None), _sinit),
+      we_gate=ArrayInfo(
+        (cfg.moe_num_experts, cfg.embed_size, cfg.moe_ffw_size),
+        cfg.dtype,
+        ("moe_experts", "moe_up_embed", "moe_up_ffw"),
+        _einit,
+      ),
+      we_up=ArrayInfo(
+        (cfg.moe_num_experts, cfg.embed_size, cfg.moe_ffw_size),
+        cfg.dtype,
+        ("moe_experts", "moe_up_embed", "moe_up_ffw"),
+        _einit,
+      ),
+      we_down=ArrayInfo(
+        (cfg.moe_num_experts, cfg.moe_ffw_size, cfg.embed_size),
+        cfg.dtype,
+        ("moe_experts", "moe_down_ffw", "moe_down_embed"),
+        _einit,
+      ),
+    )
+
 
 @register_pytree_struct
 class Layer(ShardingBase):
-  ffw: MLPLayer  # TODO: MoELayer
+  ffw: MLPLayer | MoELayer
   attn: AttentionLayer
   attn_pre_gamma: jax.Array | ArrayInfo
   attn_post_gamma: jax.Array | ArrayInfo
 
   @classmethod
   def initialize(cls, cfg: Config, layer_idx: int) -> "Layer":
+    is_moe = cfg.moe_ffw_size > 0 and (layer_idx not in cfg.mlp_layer_idxs)
     return Layer(
-      ffw=MLPLayer.initialize(cfg),
+      ffw=MoELayer.initialize(cfg) if is_moe else MLPLayer.initialize(cfg),
       attn=AttentionLayer.initialize(cfg),
       attn_pre_gamma=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
       attn_post_gamma=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
