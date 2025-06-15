@@ -8,18 +8,18 @@ import numpy
 from pathlib import Path
 from jllm.qwen_model import Weights, hf_to_Config, load_pytree, load_tokenizer
 
+
 def encode_input(tokenizer, texts, pad_id: int = 0):
   # tokenizer type: PretrainedTokenizer
   if not isinstance(texts, list):
     raise TypeError
   inputs = [
-    tokenizer.apply_chat_template([
-      {"role": "user", "content": text}
-    ], add_generation_prompt=True) for text in texts
+    tokenizer.apply_chat_template([{"role": "user", "content": text}], add_generation_prompt=True) for text in texts
   ]
   max_len = max([len(x) for x in inputs])
   inputs = [(max_len - len(x)) * [pad_id] + x for x in inputs]
-  return numpy.array(inputs) 
+  return numpy.array(inputs)
+
 
 def main(path: str | Path, is_test: str | bool):
   path = Path(path)
@@ -39,6 +39,7 @@ def main(path: str | Path, is_test: str | bool):
       "Do you like languages, why?",
     ],
   )
+
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()

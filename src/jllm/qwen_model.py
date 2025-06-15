@@ -348,3 +348,30 @@ class Weights(ShardingBase):
       gamma_final=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
       lm_head=ArrayInfo((cfg.embed_size, cfg.vocab_size), cfg.dtype, ("vocab_in", "vocab_out"), _init(0, 1)),
     )
+
+
+@register_pytree_struct
+class KVCache(ShardingBase):
+  k: list[jax.Array]  # (batch_size, key_heads, seq_len, head_dim)
+  v: list[jax.Array]  # (batch_size, key_heads, seq_len, head_dim)
+  length: jax.Array  # seq are right-aligned for slice update
+  starts: jax.Array  # [batch_size] -> needed for start indices
+
+  @classmethod
+  def initialize(cls, cfg: Config, batch_size: int, seq_len: int):
+    info_array = ArrayInfo(
+      (batch_size, cfg.kv_heads, seq_len, cfg.head_dim),
+      cfg.dtype,
+      ("batch", "kv_heads", "sequence", "head_dim"),
+      jax.nn.initializers.zeros,
+    )
+    return KVCache(
+      k=[info_array for _ in range(cfg.num_layers)],
+      v=[info_array for _ in range(cfg.num_layers)],
+      length=ArrayInfo((), jnp.int32, (), jax.nn.initializers.zero),
+      starts=ArrayInfo((batch_size,), jnp.int32, ("batch",), jax.nn.initializers.zeros),
+    )
+
+  @property
+  def sequence_axis(self) -> int:
+    return 2
