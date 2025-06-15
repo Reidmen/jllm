@@ -4,10 +4,22 @@ import argparse
 import json
 import jax
 import dataclasses
+import numpy
 from pathlib import Path
+from jllm.qwen_model import Weights, hf_to_Config, load_pytree, load_tokenizer
 
-from jllm.qwen_model import MLPLayer, hf_to_Config, load_pytree, load_tokenizer
-
+def encode_input(tokenizer, texts, pad_id: int = 0):
+  # tokenizer type: PretrainedTokenizer
+  if not isinstance(texts, list):
+    raise TypeError
+  inputs = [
+    tokenizer.apply_chat_template([
+      {"role": "user", "content": text}
+    ], add_generation_prompt=True) for text in texts
+  ]
+  max_len = max([len(x) for x in inputs])
+  inputs = [(max_len - len(x)) * [pad_id] + x for x in inputs]
+  return numpy.array(inputs) 
 
 def main(path: str | Path, is_test: str | bool):
   path = Path(path)
@@ -17,9 +29,16 @@ def main(path: str | Path, is_test: str | bool):
   mesh = jax.make_mesh((1, 2), ("x", "y"), devices=jax.devices())
   cfg = hf_to_Config(json.loads((path / "config.json").read_text()))
   cfg = dataclasses.replace(cfg, mesh=mesh)
-  init_sharded = MLPLayer.initialize_sharding(cfg)
-  # mlp_layer = load_pytree(path, init_sharded)
+  weights = load_pytree(path, Weights.initialize_sharding(cfg))
 
+  input = encode_input(
+    tokenizer,
+    [
+      "Tell me a nice phrase of humanity",
+      "What's the weather, expressed in old english",
+      "Do you like languages, why?",
+    ],
+  )
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()

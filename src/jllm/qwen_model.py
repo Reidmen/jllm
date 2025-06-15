@@ -11,7 +11,7 @@ import jax
 import jax.numpy as jnp
 import dataclasses
 from jax import tree_util
-from jax.sharding import PartitionSpec 
+from jax.sharding import PartitionSpec
 
 from typing import Any
 
@@ -118,7 +118,7 @@ class Config:
   dtype: "jnp.dtype" = jnp.bfloat16
   norm_eps: float = 1e-6
   # Sharding
-  rules: "ShardingRules" = dataclasses.field(default_factory=ShardingRules)
+  rules: ShardingRules = dataclasses.field(default_factory=ShardingRules)
   mesh: jax.sharding.Mesh | None = None
   # RoPE
   rope_theta: float = 500000.0
