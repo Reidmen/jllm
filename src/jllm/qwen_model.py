@@ -372,7 +372,7 @@ class KVCache(ShardingBase):
     return KVCache(
       k=[info_array for _ in range(cfg.num_layers)],
       v=[info_array for _ in range(cfg.num_layers)],
-      length=ArrayInfo((), jnp.int32, (), jax.nn.initializers.zero),
+      length=ArrayInfo((), jnp.int32, (), jax.nn.initializers.zeros),
       starts=ArrayInfo((batch_size,), jnp.int32, ("batch",), jax.nn.initializers.zeros),
     )
 
@@ -426,11 +426,11 @@ def _segment_ids_to_positions(segment_ids: jax.Array) -> jax.Array:
 
 # Useful lambdas
 _count_left_padding = lambda ids, pad_id=0: auto_axes(
-  lambda ids: jnp.sum(jnp.cumsum(ids != pad_id, axis=-1) == 0, axis=-1), out_shardings=PartitionSpec(None)
+  lambda ids: jnp.sum(jnp.cumsum(ids != pad_id, axis=-1) == 0, axis=-1), out_sharding=PartitionSpec(None)
 )(ids)
 _length_minus_padding = lambda segment_ids: auto_axes(
   lambda segments_indices: jnp.sum(jnp.cumsum(jnp.flip(segments_indices != 0, -1), axis=-1) > 0, -1),
-  out_shardings=PartitionSpec(None),
+  out_sharding=PartitionSpec(None),
 )(segment_ids)
 
 
@@ -472,8 +472,8 @@ def prepare_chunk(chunk, pad_to: int, pad_id: int) -> tuple[jax.Array, jax.Array
   # (batch_size, seq_len) -> (batch_size, padded_seq_len)
   if chunk.ndim == 1:
     chunk = chunk[None, :]
-
-  chunk = jnp.pad(chunk, [(0, 0), (0, pad_to - chunk.shape[-1])])
+  # pad with zeros to match pad_to
+  chunk = jnp.pad(chunk, [(0, 0), (0, pad_to - chunk.shape[-1])]) # pad with zeros
   segment_ids = jnp.where(chunk != pad_id, 1, 0).astype(jnp.int32)
 
   if chunk.ndim != 2:
@@ -482,7 +482,6 @@ def prepare_chunk(chunk, pad_to: int, pad_id: int) -> tuple[jax.Array, jax.Array
   return chunk, segment_ids
 
 
-# TODO; prefill and decode steps
 def prefill(
   tokens: jax.Array, weights: Weights, cache: KVCache, cfg: Config, pad_id: int = 0
 ) -> tuple[jax.Array, jax.Array, KVCache]:
@@ -495,12 +494,12 @@ def prefill(
 
     batch_size, seq_len = cache.k[0].shape[cache.batch_axis], cache.k[0].shape[cache.sequence_axis]
     cache_sharding = KVCache.initialize_sharding(cfg, batch_size, seq_len)
-    logits_shardingn = jax.sharding.NamedSharding(cfg.mesh, PartitionSpec(BATCH_AXIS_NAME, None, TENSOR_AXIS_NAME))
+    logits_sharding = jax.sharding.NamedSharding(cfg.mesh, PartitionSpec(BATCH_AXIS_NAME, TENSOR_AXIS_NAME))
     cache = dataclasses.replace(
-      cache, length=jnp.zeros_like(cache.length), start=_count_left_padding(tokens, pad_id=pad_id)
+      cache, length=jnp.zeros_like(cache.length), starts=_count_left_padding(tokens, pad_id=pad_id)
     )
-    logits, cache = jax.jit(forward, donate_argnames=(4,), out_shardings=(logits_shardingn, cache_sharding))(
-      prompt, prompt_seqment_ids, weights, cfg, cache
+    logits, cache = jax.jit(forward, donate_argnums=(3,), out_shardings=(logits_sharding, cache_sharding))(
+      prompt, prompt_seqment_ids, weights, cache, cfg
     )
     next_tokens = jax.jit(partial(jnp.argmax, axis=-1))(logits)
     return next_tokens, logits, cache

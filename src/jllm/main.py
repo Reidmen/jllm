@@ -6,8 +6,9 @@ import jax
 import dataclasses
 import numpy
 from pathlib import Path
-from jllm.qwen_model import Config, KVCache, Weights, hf_to_Config, load_pytree, load_tokenizer, prefill
+from jllm.qwen_model import Config, KVCache, Weights, decode_step, hf_to_Config, load_pytree, load_tokenizer, prefill
 
+TOKEN_BLOCK = 32
 
 def encode_input(tokenizer, texts, pad_id: int = 0):
   # tokenizer type: PretrainedTokenizer
@@ -43,11 +44,18 @@ def main(path: str | Path, is_test: str | bool):
   with jax.sharding.use_mesh(cfg.mesh):
     batch_size, seq_len = input.shape[0], cfg.max_seq_len
     zero_cache = KVCache.initialize(cfg, batch_size, seq_len)
-    next_tokens, logits, cache = prefill(input, weights, zero_cache, cfg)
+    next_tokens, _logits, cache = prefill(input, weights, zero_cache, cfg)
     curr_tokens = next_tokens.at[:, cache.length - 1 : cache.length].get(
       out_spec=jax.sharding.PartitionSpec(None, None)
     )
-
+    tokens_list = []
+    for _ in range(TOKEN_BLOCK):
+      tokens_list.append(curr_tokens)
+      curr_tokens, cache = decode_step(curr_tokens, weights, cache, cfg)
+    tokens = numpy.array(jax.numpy.concatenate(tokens_list, axis=-1))
+  
+  responses = [tokenizer.decode(row) for row in tokens]
+  print(f"Qwen reponses:\n {responses}")
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
