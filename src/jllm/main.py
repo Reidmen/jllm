@@ -39,6 +39,7 @@ def main(path: str | Path, is_test: str | bool):
       "Do you like languages, why?",
     ],
   )
+  # TODO: KVCache, prefill and decode step
 
 
 if __name__ == "__main__":

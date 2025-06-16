@@ -6,12 +6,14 @@
 
 from functools import partial
 import json
+import math
 from pathlib import Path
 import jax
 import jax.numpy as jnp
 import dataclasses
 from jax import tree_util
 from jax.sharding import PartitionSpec
+from jax.experimental.shard import auto_axes
 
 from typing import Any
 
@@ -373,5 +375,56 @@ class KVCache(ShardingBase):
     )
 
   @property
+  def batch_axis(self) -> int:
+    return 0
+
+  @property
   def sequence_axis(self) -> int:
     return 2
+
+
+def forward():
+  pass
+
+
+@partial(jax.jit, static_argnums=(1, 2))
+def prepare_chunk(chunk, pad_to: int, pad_id: int):
+  # (batch_size, seq_len) -> (batch_size, padded_seq_len)
+  if chunk.ndim == 1:
+    chunk = chunk[None, :]
+
+  chunk = jnp.pad(chunk, [(0, 0), (0, pad_to - chunk.shape[-1])])
+  segment_ids = jnp.where(chunk != pad_id, 1, 0).astype(jnp.int32)
+
+  if chunk.ndim != 2:
+    raise ValueError
+
+  return chunk, segment_ids
+
+
+# TODO; prefill and decode steps
+def prefill(
+  tokens: jax.Array, weights: Weights, cache: KVCache, cfg: Config, pad_id: int = 0
+) -> tuple[jax.Array, jax.Array, KVCache]:
+  _count_left_padding = lambda indices, pad_id=0: auto_axes(
+    lambda idx: jnp.sum(jnp.cumsum(idx != pad_id, axis=-1) == 0, axis=-1), out_sharding=PartitionSpec(None)
+  )(indices)
+
+  if tokens.shape[-1] > cfg.max_seq_len:
+    raise ValueError(f"seq_len {tokens.shape[-1]} larger than max_seq {cfg.max_seq_len}")
+  with jax.sharding.use_mesh(cfg.mesh):
+    # Compute the next power of 2 for padding, up to max_seq
+    pad_to = 2 ** math.ceil(math.log2((tokens.shape[-1])))
+    prompt, prompt_seqment_ids = prepare_chunk(tokens, pad_to=pad_to, pad_id=pad_id)
+
+    batch_size, seq_len = cache.k[0].shape[cache.batch_axis], cache.k[0].shape[cache.sequence_axis]
+    cache_sharding = KVCache.initialize_sharding(cfg, batch_size, seq_len)
+    logits_shardingn = jax.sharding.NamedSharding(cfg.mesh, PartitionSpec(BATCH_AXIS_NAME, None, TENSOR_AXIS_NAME))
+    cache = dataclasses.replace(
+      cache, length=jnp.zeros_like(cache.length), start=_count_left_padding(tokens, pad_id=pad_id)
+    )
+    logits, cache = jax.jit(forward, donate_argnames=(4,), out_shardings=(logits_shardingn, cache_sharding))(
+      prompt, prompt_seqment_ids, weights, cfg, cache
+    )
+    next_tokens = jax.jit(partial(jnp.argmax, axis=-1))(logits)
+    return next_tokens, logits, cache
