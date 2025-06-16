@@ -9,6 +9,8 @@ import json
 import math
 from pathlib import Path
 import jax
+import jax.experimental
+import jax.experimental.shard
 import jax.numpy as jnp
 import dataclasses
 from jax import tree_util
@@ -383,12 +385,90 @@ class KVCache(ShardingBase):
     return 2
 
 
-def forward():
-  pass
+def _rms_norm(x: jax.Array, gamma: jax.Array | None, eps: jax.Array | float) -> jax.Array:
+  rms = jnp.sqrt(jnp.mean(jnp.astype(x, jnp.float32) ** 2, axis=-1, keepdims=True) + eps)
+  return jnp.astype((gamma if gamma is not None else 1) * x / rms, jnp.bfloat16)
+
+
+def _generate_positional_embeddings(positions: jax.Array, head_dim: int, cfg: Config) -> tuple[jax.Array, jax.Array]:
+  """Generate sin/cos for Rotary Positional Embeddings
+
+  Format:
+    sin(b, t, j) = sin(rope_theta[b, t] / timescale[j])
+    cos(b, t, j) = cos(rope_theta[b, t] / timescale[j])
+  with notation b: batch_size, t: seq_len / time
+  """
+  fraction = jnp.arange(0, head_dim, 2, dtype=jnp.float32) / head_dim  # head_dim -> "feaatures"
+  timescale = cfg.rope_theta**fraction
+  rotational_frequency = 1.0 / timescale
+  # Using highest precision for sin (bfloat16 is VERY BAD)
+  sinusoid_inp = jnp.einsum(
+    "bt,k->btk",
+    positions,
+    rotational_frequency,
+    precision=jax.lax.Precision.HIGHEST,
+    out_sharding=PartitionSpec(None, None, None),  # sharding to the whole topology
+  )
+  sin = jnp.sin(sinusoid_inp).astype(cfg.dtype)  # downcasting to the cfg precision
+  cos = jnp.cos(sinusoid_inp).astype(cfg.dtype)
+  return sin, cos
+
+
+def _segment_ids_to_positions(segment_ids: jax.Array) -> jax.Array:
+  """Counts positions for segment ids."""
+
+  def _scan(a, b):
+    return ((a[0] + 1) * (a[1] == b[1]) + b[0], b[1])
+
+  vals = (jnp.zeros_like(segment_ids), segment_ids)
+  return jnp.array(jax.lax.associative_scan(_scan, vals, axis=-1)[0], dtype="int32")
+
+
+# Useful lambdas
+_count_left_padding = lambda ids, pad_id=0: auto_axes(
+  lambda ids: jnp.sum(jnp.cumsum(ids != pad_id, axis=-1) == 0, axis=-1), out_shardings=PartitionSpec(None)
+)(ids)
+_length_minus_padding = lambda segment_ids: auto_axes(
+  lambda segments_indices: jnp.sum(jnp.cumsum(jnp.flip(segments_indices != 0, -1), axis=-1) > 0, -1),
+  out_shardings=PartitionSpec(None),
+)(segment_ids)
+
+
+def forward(
+  x: jax.Array, segments_ids: jax.Array, weights: Weights, cache: KVCache | None, cfg: Config
+) -> tuple[jax.Array, KVCache | None]:
+  l2p = lambda *args: logical_to_physical(args, cfg.rules)
+  # Embedding tokens (batch_size, seq_len) -> (batch_size, seq_len, embed_dim)
+  x = weights.embedding.at[x, :].get(out_spec=l2p("batch", "sequence", "act_embed"))
+  batch_size = x.shape[0]
+  positions = _segment_ids_to_positions(segments_ids)
+  if cache is not None:
+    start_indices = jnp.where(cache.length != 0, cache.length - cache.start, 0)
+  else:
+    start_indices = jnp.zeros((batch_size,), dtype=jnp.int32)
+  # At inference time this only works for unpacked sequences
+  positions = start_indices[:, None] + positions
+  # Apply rotary embeddings (batch_size, seq_len, head_dim)
+  sin, cos = _generate_positional_embeddings(positions, cfg.head_dim, cfg)
+
+  # TODO forward_layer
+
+  # Final layer norm
+  x = _rms_norm(x, weights.gamma_final, cfg.norm_eps)
+  # Project to vocab
+  # (batch_size, seq_len, head_dim) x (head_dim, vocab) -> (batch_size, seq_len, vocab)
+  logits = jnp.einsum("btd,dv->btv", x, weights.lm_head, out_sharding=PartitionSpec())
+  if cache is not None:
+    # sum over valid segments (i.e. non padding tokens)
+    # (batch_size, seq_len) -> (batch_size,)
+    cache = dataclasses.replace(cache, length=cache.length + jnp.max(_length_minus_padding(segments_ids)))
+    return logits, cache
+
+  return logits, None
 
 
 @partial(jax.jit, static_argnums=(1, 2))
-def prepare_chunk(chunk, pad_to: int, pad_id: int):
+def prepare_chunk(chunk, pad_to: int, pad_id: int) -> tuple[jax.Array, jax.Array]:
   # (batch_size, seq_len) -> (batch_size, padded_seq_len)
   if chunk.ndim == 1:
     chunk = chunk[None, :]
@@ -406,10 +486,6 @@ def prepare_chunk(chunk, pad_to: int, pad_id: int):
 def prefill(
   tokens: jax.Array, weights: Weights, cache: KVCache, cfg: Config, pad_id: int = 0
 ) -> tuple[jax.Array, jax.Array, KVCache]:
-  _count_left_padding = lambda indices, pad_id=0: auto_axes(
-    lambda idx: jnp.sum(jnp.cumsum(idx != pad_id, axis=-1) == 0, axis=-1), out_sharding=PartitionSpec(None)
-  )(indices)
-
   if tokens.shape[-1] > cfg.max_seq_len:
     raise ValueError(f"seq_len {tokens.shape[-1]} larger than max_seq {cfg.max_seq_len}")
   with jax.sharding.use_mesh(cfg.mesh):
@@ -428,3 +504,14 @@ def prefill(
     )
     next_tokens = jax.jit(partial(jnp.argmax, axis=-1))(logits)
     return next_tokens, logits, cache
+
+
+@partial(jax.jit, donate_argnames=("cache",))
+def decode_step(current_tokens: jax.Array, weights: Weights, cache: KVCache, cfg: Config):
+  if current_tokens.ndim != 2:
+    raise ValueError(f"ndim {current_tokens.ndim} invalid. Expected 2")
+  segment_ids = jnp.ones(current_tokens.shape, dtype=jnp.int32)
+  next_logits, cache = forward(current_tokens, segment_ids, weights, cache, cfg)
+  next_tokens = jnp.argmax(next_logits, axis=-1)
+  next_tokens = jax.experimental.shard.reshard(next_tokens, PartitionSpec())  # shard to all devices
+  return next_tokens, cache

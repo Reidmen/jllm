@@ -6,7 +6,7 @@ import jax
 import dataclasses
 import numpy
 from pathlib import Path
-from jllm.qwen_model import Weights, hf_to_Config, load_pytree, load_tokenizer
+from jllm.qwen_model import Config, KVCache, Weights, hf_to_Config, load_pytree, load_tokenizer, prefill
 
 
 def encode_input(tokenizer, texts, pad_id: int = 0):
@@ -27,7 +27,7 @@ def main(path: str | Path, is_test: str | bool):
   if bool(is_test):
     jax.config.update("jax_num_cpu_devices", 2)
   mesh = jax.make_mesh((1, 2), ("x", "y"), devices=jax.devices())
-  cfg = hf_to_Config(json.loads((path / "config.json").read_text()))
+  cfg: Config = hf_to_Config(json.loads((path / "config.json").read_text()))
   cfg = dataclasses.replace(cfg, mesh=mesh)
   weights = load_pytree(path, Weights.initialize_sharding(cfg))
 
@@ -40,6 +40,13 @@ def main(path: str | Path, is_test: str | bool):
     ],
   )
   # TODO: KVCache, prefill and decode step
+  with jax.sharding.use_mesh(cfg.mesh):
+    batch_size, seq_len = input.shape[0], cfg.max_seq_len
+    zero_cache = KVCache.initialize(cfg, batch_size, seq_len)
+    next_tokens, logits, cache = prefill(input, weights, zero_cache, cfg)
+    curr_tokens = next_tokens.at[:, cache.length - 1 : cache.length].get(
+      out_spec=jax.sharding.PartitionSpec(None, None)
+    )
 
 
 if __name__ == "__main__":
