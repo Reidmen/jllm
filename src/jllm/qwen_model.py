@@ -66,7 +66,7 @@ class ShardingRules:
   This allows easy use of sharding strategies by just changing the mapping.
   """
 
-  batch: AxisName = BATCH_AXIS_NAME
+  batch: AxisName = None # TODO: Fix issue BATCH_AXIS_NAME and forward() call
   sequence: AxisName = None
   # General
   act_embed: AxisName = None
@@ -230,11 +230,28 @@ class ShardingBase:
     raise NotImplementedError
 
   @classmethod
-  def initialize_sharding(cls, cfg: Config, *args, **kwargs):
+  def initialize_shardings(cls, cfg: Config, *args, **kwargs):
     initialize = cls.initialize(cfg, *args, **kwargs)
-    return jax.tree.map(
+    return jax.tree.map(  # info type: ArrayInfo
       lambda info: logical_to_sharding(info.logical_axes, cfg.mesh, cfg.rules), initialize, is_leaf=is_param
     )
+
+  @classmethod
+  def initialize_with_key(cls, key: jax.random.PRNGKey, cfg: Config, *args, **kwargs):
+    initialize = cls.initialize(cfg, *args, **kwargs)
+    shardings = jax.tree.map(
+      lambda info: logical_to_sharding(info.logical_axes, cfg.mesh, cfg.rules), initialize, is_leaf=is_param
+    )
+
+    @partial(jax.jit, out_shardings=shardings)
+    def _init():  # init params based on key
+      num_leaves = len(jax.tree.leaves(initialize, is_leaf=is_param))
+      key_iter = iter(jax.random.split(key, num_leaves))
+      return jax.tree.map(  # info type: ArrayInfo
+        lambda info: info.initializer(next(key_iter), info.shape, info.dtype), initialize, is_leaf=is_param
+      )
+
+    return _init()
 
 
 @register_pytree_struct
@@ -398,7 +415,7 @@ def _generate_positional_embeddings(positions: jax.Array, head_dim: int, cfg: Co
     cos(b, t, j) = cos(rope_theta[b, t] / timescale[j])
   with notation b: batch_size, t: seq_len / time
   """
-  fraction = jnp.arange(0, head_dim, 2, dtype=jnp.float32) / head_dim  # head_dim -> "feaatures"
+  fraction = jnp.arange(0, head_dim, 2, dtype=jnp.float32) / head_dim  # head_dim -> features
   timescale = cfg.rope_theta**fraction
   rotational_frequency = 1.0 / timescale
   # Using highest precision for sin (bfloat16 is VERY BAD)
@@ -439,11 +456,11 @@ def forward(
 ) -> tuple[jax.Array, KVCache | None]:
   l2p = lambda *args: logical_to_physical(args, cfg.rules)
   # Embedding tokens (batch_size, seq_len) -> (batch_size, seq_len, embed_dim)
-  x = weights.embedding.at[x, :].get(out_spec=l2p("batch", "sequence", "act_embed"))
+  x = weights.embedding.at[x, :].get(out_sharding=l2p("batch", "sequence", "act_embed"))
   batch_size = x.shape[0]
   positions = _segment_ids_to_positions(segments_ids)
   if cache is not None:
-    start_indices = jnp.where(cache.length != 0, cache.length - cache.start, 0)
+    start_indices = jnp.where(cache.length != 0, cache.length - cache.starts, 0)
   else:
     start_indices = jnp.zeros((batch_size,), dtype=jnp.int32)
   # At inference time this only works for unpacked sequences
@@ -473,7 +490,7 @@ def prepare_chunk(chunk, pad_to: int, pad_id: int) -> tuple[jax.Array, jax.Array
   if chunk.ndim == 1:
     chunk = chunk[None, :]
   # pad with zeros to match pad_to
-  chunk = jnp.pad(chunk, [(0, 0), (0, pad_to - chunk.shape[-1])]) # pad with zeros
+  chunk = jnp.pad(chunk, [(0, 0), (0, pad_to - chunk.shape[-1])])  # pad with zeros
   segment_ids = jnp.where(chunk != pad_id, 1, 0).astype(jnp.int32)
 
   if chunk.ndim != 2:
@@ -493,7 +510,7 @@ def prefill(
     prompt, prompt_seqment_ids = prepare_chunk(tokens, pad_to=pad_to, pad_id=pad_id)
 
     batch_size, seq_len = cache.k[0].shape[cache.batch_axis], cache.k[0].shape[cache.sequence_axis]
-    cache_sharding = KVCache.initialize_sharding(cfg, batch_size, seq_len)
+    cache_sharding = KVCache.initialize_shardings(cfg, batch_size, seq_len)
     logits_sharding = jax.sharding.NamedSharding(cfg.mesh, PartitionSpec(BATCH_AXIS_NAME, TENSOR_AXIS_NAME))
     cache = dataclasses.replace(
       cache, length=jnp.zeros_like(cache.length), starts=_count_left_padding(tokens, pad_id=pad_id)
