@@ -66,7 +66,7 @@ class ShardingRules:
   This allows easy use of sharding strategies by just changing the mapping.
   """
 
-  batch: AxisName = None # TODO: Fix issue BATCH_AXIS_NAME and forward() call
+  batch: AxisName = BATCH_AXIS_NAME # TODO: Fix issue BATCH_AXIS_NAME and forward() call
   sequence: AxisName = None
   # General
   act_embed: AxisName = None

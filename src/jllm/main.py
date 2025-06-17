@@ -28,7 +28,8 @@ def main(path: str | Path, is_test: str | bool):
   tokenizer = load_tokenizer(path / "tokenizer.json", path / "tokenizer_config.json")
   if bool(is_test):
     jax.config.update("jax_num_cpu_devices", 2)
-  mesh = jax.make_mesh((1, 2), ("x", "y"), devices=jax.devices())
+  axes_type = (jax.sharding.AxisType.Explicit,) * jax.device_count() 
+  mesh = jax.make_mesh((1, 2), ("x", "y"), devices=jax.devices(), axis_types=axes_type)
   cfg: Config = hf_to_Config(json.loads((path / "config.json").read_text()))
   cfg = dataclasses.replace(cfg, mesh=mesh)
   weights = load_pytree(path, Weights.initialize_shardings(cfg))
