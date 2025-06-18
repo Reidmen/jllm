@@ -17,7 +17,7 @@ from jax import tree_util
 from jax.sharding import PartitionSpec
 from jax.experimental.shard import auto_axes
 
-from typing import Any
+from typing import Any, Callable
 
 OCDBT_TARGET_SIZE = 1024 * 1024 * 1024
 
@@ -66,7 +66,7 @@ class ShardingRules:
   This allows easy use of sharding strategies by just changing the mapping.
   """
 
-  batch: AxisName = BATCH_AXIS_NAME # TODO: Fix issue BATCH_AXIS_NAME and forward() call
+  batch: AxisName = BATCH_AXIS_NAME  # TODO: Fix issue BATCH_AXIS_NAME and forward() call
   sequence: AxisName = None
   # General
   act_embed: AxisName = None
@@ -214,8 +214,8 @@ class ArrayInfo:
 
 
 # Friendly isinstance checks
-is_type = lambda x, cls: (type(x).__name__ == cls.__name__) and (type(x).__module__ == cls.__module__)
-is_param = lambda x: is_type(x, ArrayInfo)
+is_type: Callable[..., bool] = lambda x, cls: (type(x).__name__ == cls.__name__) and (type(x).__module__ == cls.__module__)
+is_param: Callable[..., bool]  = lambda x: is_type(x, ArrayInfo)
 
 
 class ShardingBase:
@@ -431,6 +431,60 @@ def _generate_positional_embeddings(positions: jax.Array, head_dim: int, cfg: Co
   return sin, cos
 
 
+def attention_block(
+  x: jax.Array,
+  segment_ids: jax.Array,
+  attn_layer: AttentionLayer,
+  sin: jax.Array,
+  cos: jax.Array,
+  cache: KVCache,
+  cfg: Config
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+  pass
+
+def moe_block(x: jax.Array, layer: MoELayer, cfg: Config) -> jax.Array:
+  pass
+
+def mlp_block(x: jax.Array, layer: MLPLayer, cfg: Config) -> jax.Array:
+  l2p = lambda *specs: logical_to_physical(specs, cfg.rules)
+  with jax.named_scope("gate"):
+    ff_gate = jax.nn.silu(jnp.einsum("btd,df->btf", x, layer.w_gate)).astype(cfg.dtype)
+  with jax.named_scope("up_proj"):
+    ff_up = jnp.einsum("btd,df->btf", x, layer.w_up).astype(cfg.dtype)
+  with jax.named_scope("down_proj"):
+    ff_out = jnp.einsum(
+      "btf,fd->btd", ff_gate * ff_up, layer.w_down, out_sharding=l2p("batch", "sequence", "act_embed")
+    )
+  return ff_out
+
+def forward_layer(
+  x: jax.Array,
+  segment_ids: jax.Array,
+  layer: Layer,
+  sin: jax.Array,
+  cos: jax.Array,
+  cache: KVCache | None,
+  cfg: Config,
+):
+  x = x.astype(cfg.dtype)
+  # Attention block
+  with jax.named_scope("attn_pre_norm"):
+    attn_in =_rms_norm(x, layer.attn_pre_gamma, cfg.norm_eps)
+  attn_out, k, v = attention_block(attn_in, segment_ids, layer.attn, sin, cos, cache, cfg)
+  with jax.named_scope("residual"):
+    x = x + attn_out.astype(cfg.dtype)
+  
+  # FFN block
+  with jax.named_scope("attn_post_norm"):
+    ffn_in = _rms_norm(x, layer.attn_post_gamma, cfg.norm_eps)
+  with jax.named_scope("ffn"):
+    callable_block = moe_block if is_type(layer.ffw, MoELayer) else mlp_block
+    ffn_out = callable_block(ffn_in, layer.ffw, cfg)
+  with jax.named_scope("residual"):
+    x = x + ffn_out.astype(cfg.dtype)
+  
+  return x, k, v
+
 def _segment_ids_to_positions(segment_ids: jax.Array) -> jax.Array:
   """Counts positions for segment ids."""
 
@@ -468,7 +522,9 @@ def forward(
   # Apply rotary embeddings (batch_size, seq_len, head_dim)
   sin, cos = _generate_positional_embeddings(positions, cfg.head_dim, cfg)
 
-  # TODO forward_layer
+  # for idx, layer in enumerate(weights.layers):
+  #   x, k, v = forward_layer(x, segments_ids, layer, sin, cos, cache)
+  #   cache.k[idx], cache.v[idx] = k, v
 
   # Final layer norm
   x = _rms_norm(x, weights.gamma_final, cfg.norm_eps)
