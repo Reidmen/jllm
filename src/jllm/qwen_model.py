@@ -1,6 +1,6 @@
 # Implementation is based on
 #  https://github.com/jax-ml/jax-llm-examples/blob/main/qwen3/qwen3_jax/model.py
-# Any change is designed for clarity purposes, such as initialization of arrays.
+# Any change is designed for clarity purposes, primarily name convention.
 
 """Minimal definitions"""
 
@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import dataclasses
 from jax import tree_util
 from jax.sharding import PartitionSpec
-from jax.experimental.shard import auto_axes
+from jax.experimental.shard import auto_axes, reshard
 
 from typing import Any, Callable
 
@@ -214,8 +214,10 @@ class ArrayInfo:
 
 
 # Friendly isinstance checks
-is_type: Callable[..., bool] = lambda x, cls: (type(x).__name__ == cls.__name__) and (type(x).__module__ == cls.__module__)
-is_param: Callable[..., bool]  = lambda x: is_type(x, ArrayInfo)
+is_type: Callable[..., bool] = lambda x, cls: (type(x).__name__ == cls.__name__) and (
+  type(x).__module__ == cls.__module__
+)
+is_param: Callable[..., bool] = lambda x: is_type(x, ArrayInfo)
 
 
 class ShardingBase:
@@ -431,19 +433,81 @@ def _generate_positional_embeddings(positions: jax.Array, head_dim: int, cfg: Co
   return sin, cos
 
 
+def _apply_rotary_embedding(x: jax.Array, sin: jax.Array, cos: jax.Array) -> jax.Array:
+  if x.ndim != 4 or sin.ndim != 3 or cos.ndim != 3:
+    raise Exception
+  x1, x2 = x[..., : x.shape[-1] // 2], x[..., x.shape[-1] // 2 :]
+  # (b, t, h) -> (b, n, t, h) for n: number of heads
+  sin, cos = sin[:, None, :, :], cos[:, None, :, :]
+  return jnp.concatenate([x1 * cos - x2 * sin, x2 * cos + x1 * sin], axis=-1)
+
+
+def sharded_update_slice_in_dim(x: jax.Array, y: jax.Array, start_index: int, axis: int):
+  if x.ndim != y.ndim:
+    raise ValueError
+  y = reshard(y.astype(x.dtype), x.sharding.spec)
+  return jax.lax.dynamic_update_slice_in_dim(x, y, start_index, axis=axis)
+
+
+def attention_kernel():
+  pass
+
+
 def attention_block(
   x: jax.Array,
   segment_ids: jax.Array,
   attn_layer: AttentionLayer,
+  idx: int,
   sin: jax.Array,
   cos: jax.Array,
-  cache: KVCache,
-  cfg: Config
+  cache: KVCache | None,
+  cfg: Config,
 ) -> tuple[jax.Array, jax.Array, jax.Array]:
-  pass
+  l2p = lambda *specs: logical_to_physical(specs, cfg.rules)
+  x = x.astype(cfg.dtype)
+  # Multihead attention
+  with jax.named_scope("qkv_matmul"):
+    q = jnp.einsum("btd,dnh->bnth", x, attn_layer.q).astype(cfg.dtype)
+    k = jnp.einsum("btd,dnh->bnth", x, attn_layer.k).astype(cfg.dtype)
+    v = jnp.einsum("btd,dnh->bnth", x, attn_layer.v).astype(cfg.dtype)
+  # Apply rotary embedding
+  with jax.named_scope("rope"):
+    q, k = _rms_norm(q, attn_layer.q_gamma, cfg.norm_eps), _rms_norm(k, attn_layer.k_gamma, cfg.norm_eps)
+    q, k = _apply_rotary_embedding(q, sin, cos), _apply_rotary_embedding(k, sin, cos)
+
+  with jax.named_scope("cache"):
+    if cache is None:
+      q_segment_ids, k_segment_ids = segment_ids, segment_ids
+      q_offset = jnp.zeros(x.shape[0], dtype=jnp.int32)
+      starts, lenghts = _count_left_padding(k_segment_ids, 0), _length_minus_padding(k_segment_ids)
+    else:
+      k = sharded_update_slice_in_dim(cache.k[idx], k, cache.length, axis=cache.sequence_axis)
+      v = sharded_update_slice_in_dim(cache.v[idx], v, cache.length, axis=cache.sequence_axis)
+      time_indices = jnp.arange(0, v.shape[cache.sequence_axis])[None, :]  # (None, t)
+
+      q_segment_ids = jnp.where(segment_ids != 0, 1, 0)
+      incremental_position = jnp.max(_length_minus_padding(segment_ids))
+      k_segment_ids = (
+        (time_indices >= cache.starts[:, None]) & (time_indices < (cache.length + incremental_position))
+      ).astype(jnp.int32)
+      q_offset = cache.length[None]
+      starts, lenghts = cache.starts, (cache.length + incremental_position)[None]
+
+  with jax.named_scope("attention"):
+    attn_args = (q, k, v, q_segment_ids, k_segment_ids, q_offset, starts, lenghts)
+    attn_out = attention_kernel(*attn_args, cfg=cfg)
+
+  with jax.named_scope("projection"):
+    attn_out = jnp.einsum(
+      "bnth,nhd->btd", attn_out, attn_layer.o, out_sharding=l2p("batch", "sequence", "act_embed")
+    ).astype(cfg.dtype)
+
+  return attn_out, k, v
+
 
 def moe_block(x: jax.Array, layer: MoELayer, cfg: Config) -> jax.Array:
   pass
+
 
 def mlp_block(x: jax.Array, layer: MLPLayer, cfg: Config) -> jax.Array:
   l2p = lambda *specs: logical_to_physical(specs, cfg.rules)
@@ -457,6 +521,7 @@ def mlp_block(x: jax.Array, layer: MLPLayer, cfg: Config) -> jax.Array:
     )
   return ff_out
 
+
 def forward_layer(
   x: jax.Array,
   segment_ids: jax.Array,
@@ -469,11 +534,11 @@ def forward_layer(
   x = x.astype(cfg.dtype)
   # Attention block
   with jax.named_scope("attn_pre_norm"):
-    attn_in =_rms_norm(x, layer.attn_pre_gamma, cfg.norm_eps)
+    attn_in = _rms_norm(x, layer.attn_pre_gamma, cfg.norm_eps)
   attn_out, k, v = attention_block(attn_in, segment_ids, layer.attn, sin, cos, cache, cfg)
   with jax.named_scope("residual"):
     x = x + attn_out.astype(cfg.dtype)
-  
+
   # FFN block
   with jax.named_scope("attn_post_norm"):
     ffn_in = _rms_norm(x, layer.attn_post_gamma, cfg.norm_eps)
@@ -482,8 +547,9 @@ def forward_layer(
     ffn_out = callable_block(ffn_in, layer.ffw, cfg)
   with jax.named_scope("residual"):
     x = x + ffn_out.astype(cfg.dtype)
-  
+
   return x, k, v
+
 
 def _segment_ids_to_positions(segment_ids: jax.Array) -> jax.Array:
   """Counts positions for segment ids."""
@@ -523,7 +589,7 @@ def forward(
   sin, cos = _generate_positional_embeddings(positions, cfg.head_dim, cfg)
 
   # for idx, layer in enumerate(weights.layers):
-  #   x, k, v = forward_layer(x, segments_ids, layer, sin, cos, cache)
+  #   x, k, v = forward_layer(x, segments_ids, layer, idx, sin, cos, cache)
   #   cache.k[idx], cache.v[idx] = k, v
 
   # Final layer norm
