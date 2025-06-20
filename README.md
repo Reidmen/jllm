@@ -31,6 +31,7 @@ TODO: THE GOAL FOR THIS IS TO RUN IN COLAB / KAGGLE
 Below shows an example of the class inheritance for implementation purposes. 
 
 ```mermaid
+%%{init: { 'themeVariables': { 'fontSize': '18px'}}}%%
 classDiagram
   direction LR
   class Weights {
@@ -41,7 +42,8 @@ classDiagram
   }
 
   class Layer {
-    +MLPLayer ffw
+    +MLPLayer | MoELayer ffw
+    +AttentionLayer attn
     +ArrayInfo attn_pre_gamma
     +ArrayInfo attn_post_gamma
   }
@@ -52,16 +54,46 @@ classDiagram
     +ArrayInfo w_down
   }
 
-  Weights --o Layer : contains 28 Layers (Qwen3-0.6B)
-  Weights -- ArrayInfo : embedding (tied embedding)
-  Weights -- ArrayInfo : gamma_final (final normalization)
-  Weights -- ArrayInfo : lm_head (language model head)
-  Layer --o MLPLayer : contains Feed-Forward Network
-  Layer -- ArrayInfo : attn_pre_gamma (pre-attention normalization)
-  Layer -- ArrayInfo : attn_post_gamma (post-attention normalization)
+  class AttentionLayer {
+    +ArrayInfo q
+    +ArrayInfo k
+    +ArrayInfo v
+    +ArrayInfo o
+    +ArrayInfo q_gamma
+    +ArrayInfo k_gamma
+  }
 
-  note for Weights "Represents the entire model's trainable parameters."
-  note for Layer "Each Layer corresponds to a Transformer block, containing attention and MLP sub-layers."
-  note for MLPLayer "Implements the multi-layer perceptron (MLP) within each Transformer block."
-  note for ArrayInfo "Placeholder for actual JAX Array with sharding and initialization info."
+  class MoELayer {
+    +ArrayInfo w_router
+    +ArrayInfo we_gate
+    +ArrayInfo we_up
+    +ArrayInfo we_down
+  }
+
+  class ArrayInfo {
+    shape: tuple[int, ...]
+    dtype: jnp.dtype
+    logical_axes: tuple[str, ...]
+    initializer: callable
+    metadata: dict
+  }
+
+  Weights --o Layer : 28 Layers
+  Weights -- ArrayInfo : embedding
+  Weights -- ArrayInfo : final norm (gamma)
+  Weights -- ArrayInfo : lm_head (language model head)
+
+  Layer --o MLPLayer : FFN
+  Layer --o MoELayer : MoE
+  Layer --o AttentionLayer : MH-Attention
+  Layer -- ArrayInfo : pre-attention norm (gamma)
+  Layer -- ArrayInfo : post-attention norm (gamma)
+
+  MLPLayer -- ArrayInfo : MLP weights
+  AttentionLayer -- ArrayInfo : Attention weights (Q, K, V, Output)
+  MoELayer -- ArrayInfo : MoE weights (Router, Gate, Up, Down)
+
+  note for Weights "Model's (train) parameters."
+  note for Layer "Layer -> Transformer Block with MLP or MoE"
+  note for ArrayInfo "Placeholder for JAX Array with sharding"
 ```
