@@ -8,7 +8,8 @@ import numpy
 from pathlib import Path
 from jllm.qwen_model import Config, KVCache, Weights, decode_step, hf_to_Config, load_pytree, load_tokenizer, prefill
 
-TOKEN_BLOCK = 128 
+TOKEN_BLOCK = 128
+
 
 def encode_input(tokenizer, texts, pad_id: int = 0):
   # tokenizer type: PretrainedTokenizer

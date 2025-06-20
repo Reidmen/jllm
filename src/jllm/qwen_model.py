@@ -10,8 +10,7 @@ import math
 from pathlib import Path
 import jax
 import jax.experimental
-import jax.experimental.shard
-import jax.experimental.shard_map
+from jax.experimental.shard_map import shard_map
 import jax.numpy as jnp
 import dataclasses
 from jax import tree_util
@@ -120,7 +119,7 @@ class Config:
   # Kernel config
   use_prefill_attn_kernel: bool = False
   use_decode_attn_kernel: bool = False
-  use_naive_attn_kernel: bool = True
+  use_naive_attn_kernel: bool = False
   dtype: "jnp.dtype" = jnp.bfloat16
   norm_eps: float = 1e-6
   # Sharding
@@ -446,13 +445,13 @@ def sharded_update_slice_in_dim(x: jax.Array, y: jax.Array, start_index: int, ax
 
 
 def make_attention_mask(
-    q_len: jax.Array,
-    k_len: jax.Array,
-    q_segment_ids: jax.Array,
-    kv_segment_ids: jax.Array,
-    q_offset: jax.Array,
-    causal: bool,
-    starts: jax.Array | None = None
+  q_len: jax.Array,
+  k_len: jax.Array,
+  q_segment_ids: jax.Array,
+  kv_segment_ids: jax.Array,
+  q_offset: jax.Array,
+  causal: bool,
+  starts: jax.Array | None = None,
 ) -> jax.Array:
   # (batch_size, qseq_len, kseq_len)
   segment_mask = q_segment_ids[:, :, None] == kv_segment_ids[:, None, :]
@@ -503,9 +502,9 @@ def naive_attention_kernel(
 
 
 def attention_kernel(
-  q: jax.Array,
-  k: jax.Array,
-  v: jax.Array,
+  q: jax.Array,  # (batch_size, qnum_heads, qseq_len, head_dim)
+  k: jax.Array,  # (batch_size, knum_heads, kseq_len, head_dim)
+  v: jax.Array,  # (batch_size, knum_heads, kseq_len, head_dim)
   q_segment_ids: jax.Array,
   kv_segment_ids: jax.Array,
   q_offset: jax.Array,
@@ -514,16 +513,15 @@ def attention_kernel(
   cfg: Config,
 ):
   """Flash (GQ)-Attention kernel."""
-  # Check type (float32) performance
-  if q.shape[-3] % k.shape[-3] != 0:  # ensure group query attention
+  if q.shape[-3] % k.shape[-3] != 0:  # Required for GQA
     raise Exception
   l2p = lambda *specs: logical_to_physical(specs, cfg.rules)
-  scale = q.share[-1] ** (-0.5)  # head_dim ** (-1/2)
+  scale = q.shape[-1] ** (-0.5)  # head_dim ** (-1/2)
   kv_repeats = q.shape[-3] // k.shape[-3]  # q_num_heads // k_num_heads
   q_spec = PartitionSpec(
     *(l2p("batch", "kv_heads") + tuple(set(*l2p("q_heads")) - set(*l2p("kv_heads"))) + l2p("sequence", "head_dim"))
   )
-  q_shape = q.shape
+  q_shape = q.shape  # shape before reshaping for GQA
   q = jax.lax.reshape(q, (q.shape[:-3] + (k.shape[-3], kv_repeats, q.shape[-2], q.shape[-1])), out_sharding=q_spec)
   # Sharding map
   in_specs = (
@@ -531,14 +529,16 @@ def attention_kernel(
     l2p("batch", "kv_heads", "sequence", "head_dim"),
     l2p("batch", "kv_heads", "sequence", "head_dim"),
     l2p("batch", "sequence"),
-    l2p("batchsequence"),
+    l2p("batch", "sequence"),
     l2p("batch"),
     l2p("batch"),
   )
   out_specs = q_spec
 
-  @partial(jax.experimental.shard_map, mesh=cfg.mesh, in_specs=in_specs, out_specs=out_specs, check_rep=False)
+  @partial(shard_map, mesh=cfg.mesh, in_specs=in_specs, out_specs=out_specs, check_rep=False)
   def _forward(q, k, v, q_segment_ids, kv_segment_ids, starts, lengths):
+    # q: (batch_size, kv_heads, q_heads // kv_heads, seq_len, head_dim)
+    # k, v: (batch_size, kv_heads, seq_len, head_dim)
     if q.shape[-2] == 1:
       raise Exception  # decoder kernel not implemented
     mask = splash_attention_mask.MultiHeadMask(
@@ -546,9 +546,8 @@ def attention_kernel(
     )
     block_q, block_kv = min(q.shape[-2], 512), min(k.shape[-2], 1024)
     block_sizes = splash_attention_kernel.BlockSizes(block_q=block_q, block_kv=block_kv, block_kv_compute=block_kv)
-    attn_fn = splash_attention_kernel.make_splash_mha_single_device(mask=mask, block_sizes=block_sizes)
+    attn_fn = splash_attention_kernel.make_splash_mha_single_device(mask=mask, block_sizes=block_sizes, is_mqa=True)
     attn_fn = jax.vmap(jax.vmap(attn_fn, in_axes=(0, 0, 0, None)), in_axes=(0, 0, 0, 0))
-
     segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
     attn_ret = attn_fn(q * scale, k, v, segment_ids)
 
@@ -556,12 +555,11 @@ def attention_kernel(
 
   lengths = jnp.broadcast_to(lengths, starts.shape)
   attn_out = _forward(q, k, v, q_segment_ids, kv_segment_ids, starts, lengths).astype(jnp.bfloat16)
-  # (batch_size, num_heads, seq_len, head_dim)
-  return jax.lax.reshape(attn_out, q.shape, out_sharding=l2p("batch", "q_heads", "sequence", "head_dim"))
+  return jax.lax.reshape(attn_out, q_shape, out_sharding=l2p("batch", "q_heads", "sequence", "head_dim"))
 
 
 def attention_block(
-  x: jax.Array, # (batch_size, seq_len, model_dim)
+  x: jax.Array,  # (batch_size, seq_len, model_dim)
   segment_ids: jax.Array,
   attn_layer: AttentionLayer,
   idx: int,
@@ -603,7 +601,7 @@ def attention_block(
   with jax.named_scope("attention"):
     attn_args = (q, k, v, q_segment_ids, k_segment_ids, q_offset, starts, lenghts)
     if not cfg.use_naive_attn_kernel:
-      attn_out = attention_kernel(*attn_args, cfg=cfg) # TODO test flash attention 
+      attn_out = attention_kernel(*attn_args, cfg=cfg)  # TODO test flash attention
     else:
       attn_out = naive_attention_kernel(*attn_args, cfg=cfg)
 
@@ -633,7 +631,7 @@ def mlp_block(x: jax.Array, layer: MLPLayer, cfg: Config) -> jax.Array:
 
 
 def forward_layer(
-  x: jax.Array, # (batch_size, seq_len, model_dim)
+  x: jax.Array,  # (batch_size, seq_len, model_dim)
   segment_ids: jax.Array,
   layer: Layer,
   idx: int,
