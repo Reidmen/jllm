@@ -451,6 +451,8 @@ def sharded_update_slice_in_dim(x: jax.Array, y: jax.Array, start_index: int, ax
   return jax.lax.dynamic_update_slice_in_dim(x, y, start_index, axis=axis)
 
 
+def make_attention_mask(): pass
+
 def naive_attention_kernel(
   q: jax.Array,  # (batch_size, qnum_heads, qseq_len, head_dim)
   k: jax.Array,  # (batch_size, knum_heads, kseq_len, head_dim)
