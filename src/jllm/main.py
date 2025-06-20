@@ -23,7 +23,7 @@ def encode_input(tokenizer, texts, pad_id: int = 0):
   return numpy.array(inputs)
 
 
-def main(path: str | Path, is_test: str | bool):
+def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool):
   path = Path(path)
   tokenizer = load_tokenizer(path / "tokenizer.json", path / "tokenizer_config.json")
   if bool(is_test):
@@ -31,7 +31,7 @@ def main(path: str | Path, is_test: str | bool):
   axes_type = (jax.sharding.AxisType.Explicit,) * jax.device_count()
   mesh = jax.make_mesh((1, 2), ("x", "y"), devices=jax.devices(), axis_types=axes_type)
   cfg: Config = hf_to_Config(json.loads((path / "config.json").read_text()))
-  cfg = dataclasses.replace(cfg, mesh=mesh)
+  cfg = dataclasses.replace(cfg, mesh=mesh, use_naive_attn_kernel=False if bool(use_flash_attention) else True)
   weights = load_pytree(path, Weights.initialize_shardings(cfg))
 
   input = encode_input(
@@ -64,5 +64,6 @@ if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument("--weights_path", required=True, help=f"HuggingFace path to weights")
   parser.add_argument("--test_cpu", required=False, default=False, help="Test flag to execute on CPU-only")
+  parser.add_argument("--flash_attention", required=False, default=False, help="Use Flash-Attention (TPU-only)")
   args = parser.parse_args()
-  main(args.weights_path, args.test_cpu)
+  main(args.weights_path, args.test_cpu, args.flash_attention)
