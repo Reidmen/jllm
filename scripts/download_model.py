@@ -5,6 +5,11 @@ example_models = [
   "Qwen/Qwen3-0.6B",
   "Qwen/Qwen3-1.7B",
   "Qwen/Qwen3-4B",
+  "Qwen/Qwen3-8B",
+  "Qwen/Qwen3-14B",
+  "Qwen/Qwen3-32B",
+  "Qwen/Qwen3-30B-A3B",
+  "Qwen/Qwen3-235B-A22B",
 ]
 
 
