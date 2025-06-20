@@ -1,10 +1,10 @@
 # JLLM
 This repository contains pieces of code to run `Qwen3` models (`0.6B, 4B, 8B, 14B`). 
 
-The goal is educational and aims at providing a `JAX` implementation of `Qwen` and `Llama` models powerful enough to use all Colab resources (v2-8 TPU).
+The goal is educational and aims at providing a `JAX` implementation of `Qwen` and `Llama` models, powerful enough to use all Colab resources (v2-8 TPU).
 
 > [!NOTE] 
-> This repository is strongly based on (jax-llm-exampled)[https://github.com/jax-ml/jax-llm-examples/tree/main].
+> This repository is strongly based on [jax-llm-exampled](https://github.com/jax-ml/jax-llm-examples/tree/main).
 > The models implemented here do NOT have quantization (yet), and variable/function definitions more verbose.
 > All credits MUST go to the JAX team.
 
