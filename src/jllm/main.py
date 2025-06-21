@@ -28,7 +28,7 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool)
   tokenizer = load_tokenizer(path / "tokenizer.json", path / "tokenizer_config.json")
   if bool(is_test):
     jax.config.update("jax_num_cpu_devices", 2)
-  axes_type = (jax.sharding.AxisType.Explicit,) * 2 # x, y
+  axes_type = (jax.sharding.AxisType.Explicit,) * 2  # x, y
   # TODO topology (1, 4, jax.device_count() // 4)  with (x, y, z)
   mesh = jax.make_mesh((1, jax.device_count()), ("x", "y"), devices=jax.devices(), axis_types=axes_type)
   cfg: Config = hf_to_Config(json.loads((path / "config.json").read_text()))
@@ -41,7 +41,7 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool)
       "Tell me a nice phrase of humanity",
       "What's the weather, expressed in old english",
       "Do you like languages, why?",
-      "Can you explain in German a phrase connected to German philosophy?"
+      "Can you explain in German a phrase connected to German philosophy?",
     ],
   )
   # TODO: KVCache, prefill and decode step

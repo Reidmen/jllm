@@ -613,8 +613,71 @@ def attention_block(
   return attn_out, k, v
 
 
+@partial(jax.jit, static_argnames=("replicated_routing",))
+def _route_tokens_to_moe_experts(
+  x: jax.Array, weights: jax.Array, replicated_routing: bool, cfg: Config
+) -> tuple[jax.Array, jax.Array]:
+  _reshard_l2p = lambda x, spec: reshard(x, logical_to_physical(spec, cfg.rules))
+  x_shape = x.shape
+  x = x.reshape((-1, x.shape[-1]))
+  if replicated_routing:  # avoid communication for small batches
+    x = _reshard_l2p(x, (None, None))
+  else:
+    x = reshard(x, PartitionSpec(TENSOR_AXIS_NAME, None))
+  weights = _reshard_l2p(weights, (None, None))
+  scores = jnp.einsum("sd,dj", x, weights).astype(cfg.moe_gate_dtype)  # j in the num. experts
+  topk_weights, topk_idx = jax.lax.top_k(jax.nn.softmax(scores, axis=-1), cfg.moe_experts_per_tok)
+  topk_weights = topk_weights / jnp.sum(topk_weights, axis=-1, keepdims=True)
+  topk_weights = _reshard_l2p(topk_weights, (None, None)).reshape(x_shape[:-1] + (cfg.moe_experts_per_tok,))
+  topk_idx = _reshard_l2p(topk_idx, (None, None)).reshape(x_shape[:-1] + (cfg.moe_experts_per_tok,))
+  return topk_weights, topk_idx
+
+
 def moe_block(x: jax.Array, layer: MoELayer, cfg: Config) -> jax.Array:
-  pass
+  if x.ndim != 3:  # (batch_size, seq_len, embed_dim)
+    raise Exception
+  l2p = lambda *axes: logical_to_physical(axes, cfg.rules)
+  _reshard = lambda z, spec: reshard(z, PartitionSpec(*spec))
+  # ensure device_count() divides the total token count
+  # TODO: replication when x.shape[-2] == 1?
+  replicated_routing = (x.shape[-2] * x.shape[-3]) & jax.device_count() != 0
+  topk_weights, topk_idx = _route_tokens_to_moe_experts(x, layer.w_router, replicated_routing, cfg)
+  tensor_axname, expert_axname = l2p("moe_top")[0], l2p("moe_expert")[0]
+
+  x_spec = l2p("batch", "sequence", None)
+  topk_weights_spec, top_idx_spec = l2p("batch", "sequence", None), l2p("batch", "sequence", None)
+  out_spec = l2p("batch", "sequence", None)
+
+  we_gate_spec = l2p("moe_expert", None, "moe_top")
+  we_up_sepc = l2p("moe_expert", None, "moe_top")
+  we_down_spec = l2p("moe_expert", "moe_top", None)
+  we_gate = _reshard(layer.we_gate, we_gate_spec)
+  we_up = _reshard(layer.we_up, we_up_sepc)
+  we_down = _reshard(layer.we_down, we_down_spec)
+
+  in_specs = (x_spec, we_gate_spec, we_up_sepc, we_down_spec, topk_weights_spec, top_idx_spec)
+  is_embedding_sharded = l2p("act_embed")[0] is not None
+  if is_embedding_sharded:  # activation are sharded
+    out_spec = PartitionSpec(*(out_spec[:-1] + (tensor_axname,)))
+  if cfg.ep_strategy == "prefill":
+    out_spec = PartitionSpec(*(out_spec[:-1] + (tensor_axname,)))
+
+  expert_count = cfg.mesh.axis_sizes[cfg.mesh.axis_names.index(expert_axname)] if expert_axname is not None else 1
+  tensor_count = cfg.mesh.axis_sizes[cfg.mesh.axis_names.index(tensor_axname)] if tensor_axname is not None else 1
+  if cfg.moe_num_experts & expert_count != 0:
+    raise ValueError
+  expert_size = cfg.moe_num_experts // expert_count
+
+  @partial(shard_map, mesh=cfg.mesh, in_specs=in_specs, out_spec=out_spec, check_rep=False)
+  def _expert_fun(x, we_gate, we_up, we_down, topk_weights, topk_idx):
+    pass
+
+  with jax.named_scope("moe_routed_expert"):
+    _x = _reshard(x, x_spec)
+    ff_out_expert = _expert_fun(_x, we_gate, we_up, we_down, topk_weights, topk_idx)
+    ff_out_expert = ff_out_expert[..., : x.shape[-1]]
+
+  return _reshard(ff_out_expert, l2p("batch", "sequence", "act_embed"))
 
 
 def mlp_block(x: jax.Array, layer: MLPLayer, cfg: Config) -> jax.Array:
