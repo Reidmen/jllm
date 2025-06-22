@@ -1,6 +1,7 @@
 # Implementation is based on
 #  https://github.com/jax-ml/jax-llm-examples/blob/main/qwen3/qwen3_jax/model.py
 # Any change is designed for clarity purposes, primarily name convention.
+# Tested with jax == 0.6.1 and transformers 4.52.4
 
 """Minimal definitions"""
 
@@ -632,6 +633,13 @@ def _route_tokens_to_moe_experts(
   topk_idx = _reshard_l2p(topk_idx, (None, None)).reshape(x_shape[:-1] + (cfg.moe_experts_per_tok,))
   return topk_weights, topk_idx
 
+def _moe_gmm(lhs: jax.Array, rhs: jax.Array, group_sizes, topk_idx, cfg: Config):
+  if lhs.ndim != 2 and rhs.ndim != 3:
+    raise ValueError(f"{lhs.ndim=} != 2 and {rhs.ndim=} != 3")
+  group_sizes = group_sizes.astype(jnp.int32)
+  with jax.named_scope("jax.lax.ragged_dot"):
+    ret = jax.lax.ragged_dot(lhs, rhs, group_sizes)
+  return ret.astype(cfg.dtype)
 
 def moe_block(x: jax.Array, layer: MoELayer, cfg: Config) -> jax.Array:
   if x.ndim != 3:  # (batch_size, seq_len, embed_dim)
@@ -669,8 +677,62 @@ def moe_block(x: jax.Array, layer: MoELayer, cfg: Config) -> jax.Array:
   expert_size = cfg.moe_num_experts // expert_count
 
   @partial(shard_map, mesh=cfg.mesh, in_specs=in_specs, out_spec=out_spec, check_rep=False)
-  def _expert_fun(x, we_gate, we_up, we_down, topk_weights, topk_idx):
-    pass
+  def _expert_fun(x: jax.Array, we_gate, we_up, we_down, topk_weights, topk_idx: jax.Array):
+    (batch_size, seq_len, embed_dim), experts_per_tok = x.shape, cfg.moe_experts_per_tok
+    expert_idx = jax.lax.axis_index(expert_axname) if expert_axname is not None else 0
+    _topk_idx = topk_idx.reshape(-1)  # (batch_size * seq_len * experts_per_tok)
+    _valid_group_mask = (_topk_idx >= expert_size * expert_idx) & (_topk_idx < expert_size * (expert_idx + 1))
+    expert_mapped_topk_idx = jnp.where(_valid_group_mask, _topk_idx - expert_idx * expert_size, 2**30)
+
+    sort_idx = jnp.argsort(expert_mapped_topk_idx, axis=-1)  # (batch_size * seq_len * experts_per_tok)
+    isort_idx = jnp.argsort(sort_idx)
+    if cfg.ep_strategy == "prefill":
+      truncate_size = round(2 * sort_idx.size / expert_count)
+      sort_idx, isort_idx = sort_idx[:truncate_size], isort_idx[:truncate_size]
+
+    topk_idx_sort = _topk_idx[sort_idx]
+    expert_mapped_topk_idx_sort = expert_mapped_topk_idx[sort_idx]
+    valid_group_mask_sort = expert_mapped_topk_idx_sort < 2**30
+    expert_mapped_topk_idx_sort = jnp.where(expert_mapped_topk_idx_sort < 2**30, expert_mapped_topk_idx_sort, 0)
+
+    x_repeat_sort = jnp.take_along_axis(
+      x.reshape((-1, x.shape[-1])), sort_idx[:, None] // experts_per_tok, axis=-2
+    )  # (batch_size * seq_len * experts_per_tok, embed_dim)
+    group_sizes = jnp.bincount(topk_idx_sort, length=cfg.moe_experts_per_tok)
+    group_sizes_shard = jax.lax.dynamic_index_in_dim(group_sizes, expert_idx * expert_size, expert_size, 0)
+
+    with jax.named_scope("we_gate"):
+      ff_gate = _moe_gmm(x_repeat_sort, we_gate, group_sizes_shard, expert_mapped_topk_idx_sort, cfg)
+      ff_gate = jax.nn.silu(ff_gate)
+      ff_gate = jnp.where(valid_group_mask_sort[..., None], ff_gate, 0)
+    with jax.named_scope("we_up"):
+      ff_up = _moe_gmm(x_repeat_sort, we_up, group_sizes_shard, expert_mapped_topk_idx_sort, cfg) 
+    ff_gate_up = jnp.where(valid_group_mask_sort[..., None], ff_gate * ff_up, 0)
+    with jax.named_scope("we_down"):
+      ff_out = _moe_gmm(ff_gate_up, we_down, group_sizes_shard, expert_mapped_topk_idx_sort, cfg)
+      ff_out = jnp.where(valid_group_mask_sort[..., None], ff_out, 0)
+    
+    if cfg.ep_strategy == "prefill":
+      raise NotImplementedError 
+    with jax.named_scope("unpermute"):
+      ff_out = jnp.take_along_axis(ff_out, isort_idx[..., None], axis=-2)
+    with jax.named_scope("expert_summing"):
+      ff_out_expert = jnp.sum(ff_out.reshape((batch_size * seq_len, experts_per_tok, embed_dim)), axis=-2)
+      ff_out_expert = ff_out_expert.astype(cfg.dtype)
+    with jax.named_scope("experts_collective"):
+      if is_embedding_sharded:
+        with jax.named_scope("expert_psum_scatter"):
+          ff_out_expert = jax.lax.psum_scatter(
+            ff_out_expert, tensor_axname, scatter_dimension=1, titled=True
+          )
+        with jax.named_scope("expert_psum_along_exname"):
+          if expert_axname is not None:
+            ff_out_expert = jax.lax.psum(ff_out_expert, expert_axname)
+      else:
+        psum_axes = tensor_axname if expert_axname is None else (expert_axname, tensor_axname)
+        ff_out_expert = jax.lax.psum(ff_out_expert, psum_axes)
+    ff_out_expert = ff_out_expert.reshape((batch_size, seq_len, ff_out_expert.shape[-1]))
+    return ff_out_expert
 
   with jax.named_scope("moe_routed_expert"):
     _x = _reshard(x, x_spec)
