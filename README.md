@@ -4,9 +4,9 @@ This repository contains pieces of code to run `Qwen3` models (`0.6B, 4B, 8B, 14
 The goal is educational and aims at providing a `JAX` implementation of `Qwen` and `Llama` models, powerful enough to use all Colab resources (v2-8 TPU).
 
 > [!NOTE] 
-> This repository is strongly based on [jax-llm-examples](https://github.com/jax-ml/jax-llm-examples/tree/main).
+> This repository is based on [jax-llm-examples](https://github.com/jax-ml/jax-llm-examples/tree/main).
 > The models implemented here do NOT have quantization (yet), and variable/function definitions more verbose.
-> All credits MUST go to the JAX team.
+> All credits **MUST** go to the JAX team.
 
 ## Setup Environment
 
@@ -91,7 +91,7 @@ classDiagram
     metadata: dict
   }
 
-  Weights --o Layer : 28 Layers
+  Weights --o Layer : 28 layers
   Weights -- ArrayInfo : embedding
   Weights -- ArrayInfo : final norm (gamma)
   Weights -- ArrayInfo : lm_head (language model head)
@@ -103,10 +103,10 @@ classDiagram
   Layer -- ArrayInfo : post-attention norm (gamma)
 
   MLPLayer -- ArrayInfo : MLP weights
-  AttentionLayer -- ArrayInfo : Attention weights (Q, K, V, Output)
+  AttentionLayer -- ArrayInfo : Attention weights (Q, K, V, O)
   MoELayer -- ArrayInfo : MoE weights (Router, Gate, Up, Down)
 
-  note for Weights "Model's (train) parameters."
-  note for Layer "Layer -> Transformer Block with MLP or MoE"
-  note for ArrayInfo "Placeholder for JAX Array with sharding"
+  note for Weights "Model trainable parameters."
+  note for Layer "Layer -> Transformer Block with MLP/MoE"
+  note for ArrayInfo "Placeholder for Arrays with sharding"
 ```

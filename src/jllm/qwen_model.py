@@ -682,43 +682,45 @@ def moe_block(x: jax.Array, layer: MoELayer, cfg: Config) -> jax.Array:
     expert_idx = jax.lax.axis_index(expert_axname) if expert_axname is not None else 0
     _topk_idx = topk_idx.reshape(-1)  # (batch_size * seq_len * experts_per_tok)
     _valid_group_mask = (_topk_idx >= expert_size * expert_idx) & (_topk_idx < expert_size * (expert_idx + 1))
-    expert_mapped_topk_idx = jnp.where(_valid_group_mask, _topk_idx - expert_idx * expert_size, 2**30)
+    _expert_mapped_topk_idx = jnp.where(_valid_group_mask, _topk_idx - expert_idx * expert_size, 2**30)
 
-    sort_idx = jnp.argsort(expert_mapped_topk_idx, axis=-1)  # (batch_size * seq_len * experts_per_tok)
-    isort_idx = jnp.argsort(sort_idx)
+    _sort_idx = jnp.argsort(_expert_mapped_topk_idx, axis=-1)  # (batch_size * seq_len * experts_per_tok)
+    _isort_idx = jnp.argsort(_sort_idx)
     if cfg.ep_strategy == "prefill":
-      truncate_size = round(2 * sort_idx.size / expert_count)
-      sort_idx, isort_idx = sort_idx[:truncate_size], isort_idx[:truncate_size]
+      truncate_size = round(2 * _sort_idx.size / expert_count)
+      _sort_idx, _isort_idx = _sort_idx[:truncate_size], _isort_idx[:truncate_size]
 
-    topk_idx_sort = _topk_idx[sort_idx]
-    expert_mapped_topk_idx_sort = expert_mapped_topk_idx[sort_idx]
-    valid_group_mask_sort = expert_mapped_topk_idx_sort < 2**30
-    expert_mapped_topk_idx_sort = jnp.where(expert_mapped_topk_idx_sort < 2**30, expert_mapped_topk_idx_sort, 0)
-
-    x_repeat_sort = jnp.take_along_axis(
-      x.reshape((-1, x.shape[-1])), sort_idx[:, None] // experts_per_tok, axis=-2
+    _topk_idx_sort = _topk_idx[_sort_idx]
+    _expert_mapped_topk_idx_sort = _expert_mapped_topk_idx[_sort_idx]
+    _valid_group_mask_sort = _expert_mapped_topk_idx_sort < 2**30
+    _expert_mapped_topk_idx_sort = jnp.where(_valid_group_mask_sort, _expert_mapped_topk_idx_sort, 0)
+    # x.reshape: (batch_size * seq_len, embed_dim)
+    _x_repeat_sort = jnp.take_along_axis(
+      x.reshape((-1, x.shape[-1])), _sort_idx[:, None] // experts_per_tok, axis=-2
     )  # (batch_size * seq_len * experts_per_tok, embed_dim)
-    group_sizes = jnp.bincount(topk_idx_sort, length=cfg.moe_experts_per_tok)
+    group_sizes = jnp.bincount(_topk_idx_sort, length=cfg.moe_experts_per_tok)
     group_sizes_shard = jax.lax.dynamic_index_in_dim(group_sizes, expert_idx * expert_size, expert_size, 0)
-
+    
     with jax.named_scope("we_gate"):
-      ff_gate = _moe_gmm(x_repeat_sort, we_gate, group_sizes_shard, expert_mapped_topk_idx_sort, cfg)
+      ff_gate = _moe_gmm(_x_repeat_sort, we_gate, group_sizes_shard, _expert_mapped_topk_idx_sort, cfg)
       ff_gate = jax.nn.silu(ff_gate)
-      ff_gate = jnp.where(valid_group_mask_sort[..., None], ff_gate, 0)
+      ff_gate = jnp.where(_valid_group_mask_sort[..., None], ff_gate, 0)
     with jax.named_scope("we_up"):
-      ff_up = _moe_gmm(x_repeat_sort, we_up, group_sizes_shard, expert_mapped_topk_idx_sort, cfg) 
-    ff_gate_up = jnp.where(valid_group_mask_sort[..., None], ff_gate * ff_up, 0)
+      ff_up = _moe_gmm(_x_repeat_sort, we_up, group_sizes_shard, _expert_mapped_topk_idx_sort, cfg) 
+    ff_gate_up = jnp.where(_valid_group_mask_sort[..., None], ff_gate * ff_up, 0)
     with jax.named_scope("we_down"):
-      ff_out = _moe_gmm(ff_gate_up, we_down, group_sizes_shard, expert_mapped_topk_idx_sort, cfg)
-      ff_out = jnp.where(valid_group_mask_sort[..., None], ff_out, 0)
+      ff_out = _moe_gmm(ff_gate_up, we_down, group_sizes_shard, _expert_mapped_topk_idx_sort, cfg)
+      ff_out = jnp.where(_valid_group_mask_sort[..., None], ff_out, 0)
+
+    ff_out = ff_out * topk_weights.reshape(-1)[_sort_idx][:, None]
     
     if cfg.ep_strategy == "prefill":
       raise NotImplementedError 
     with jax.named_scope("unpermute"):
-      ff_out = jnp.take_along_axis(ff_out, isort_idx[..., None], axis=-2)
+      ff_out = jnp.take_along_axis(ff_out, _isort_idx[..., None], axis=-2)
     with jax.named_scope("expert_summing"):
       ff_out_expert = jnp.sum(ff_out.reshape((batch_size * seq_len, experts_per_tok, embed_dim)), axis=-2)
-      ff_out_expert = ff_out_expert.astype(cfg.dtype)
+      ff_out_expert = ff_out_expert.astype(cfg.dtype) # summing along the expert dim
     with jax.named_scope("experts_collective"):
       if is_embedding_sharded:
         with jax.named_scope("expert_psum_scatter"):
