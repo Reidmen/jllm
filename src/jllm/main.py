@@ -23,7 +23,7 @@ def encode_input(tokenizer, texts, pad_id: int = 0):
   return numpy.array(inputs)
 
 
-def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool):
+def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool, user_text: str | None):
   path = Path(path)
   tokenizer = load_tokenizer(path / "tokenizer.json", path / "tokenizer_config.json")
   if bool(is_test):
@@ -35,15 +35,15 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool)
   cfg = dataclasses.replace(cfg, mesh=mesh, use_naive_attn_kernel=False if bool(use_flash_attention) else True)
   weights = load_pytree(path, Weights.initialize_shardings(cfg))
 
-  input = encode_input(
-    tokenizer,
-    [
+  prompts = [
       "Tell me a nice phrase of humanity",
-      "What's the weather, expressed in old english",
-      "Do you like languages, why?",
+      "Do you like the old english language, why?",
       "Can you explain in German a phrase connected to German philosophy?",
-    ],
-  )
+    ]
+  if isinstance(user_text, str):
+    prompts.append(f"Provide an answer to this: {user_text}")
+
+  input = encode_input(tokenizer, prompts)
   # TODO: KVCache, prefill and decode step
   with jax.sharding.use_mesh(cfg.mesh):
     batch_size, seq_len = input.shape[0], cfg.max_seq_len
@@ -67,7 +67,8 @@ if __name__ == "__main__":
   parser.add_argument("--weights_path", required=True, help=f"HuggingFace path to weights")
   parser.add_argument("--test_cpu", required=False, default=False, help="Test flag to execute on CPU-only")
   parser.add_argument("--flash_attention", required=False, default=False, help="Use Flash-Attention (TPU-only)")
+  parser.add_argument("--user_input", required=False, default=None, help="A user input (string)")
   args = parser.parse_args()
   # with jax.profiler.trace("./tmp/jllm_main_profile"):
   #   main(args.weights_path, args.test_cpu, args.flash_attention)
-  main(args.weights_path, args.test_cpu, args.flash_attention)
+  main(args.weights_path, args.test_cpu, args.flash_attention, args.user_input)
