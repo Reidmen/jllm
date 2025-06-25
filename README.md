@@ -23,7 +23,7 @@ git clone https://github.com/Reidmen/jllm && cd ./jllm && uv pip install .
 ## Qwen3
 
 Following the open-weighted models from Qwen, this repo contains the architecture 
-implementation to run `Qwen3 0.6B` parameters model.
+implementation to run `Qwen3` parameters models.
 
 From its [release-notes](https://qwenlm.github.io/blog/qwen3/), some model characteristics are:
 
@@ -33,14 +33,38 @@ From its [release-notes](https://qwenlm.github.io/blog/qwen3/), some model chara
 * `Qwen3 30B-A3B`, 48 Layers, 32 / 4 (Q/KV), 128T - 8A Experts and context of 128K 
 
 
-To run the `Qwen3-0.6B` model in a Colab instance, simply type:
+## Example
+
+To run the `Qwen3-4B` model in a Colab instance, simply type:
 ```bash
-!python3 ./jllm/scripts/download_model.py --model-id "Qwen/Qwen3-0.6B" --dest-path ./hf_models/ 
-!python3 ./jllm/scripts/convert_weights.py --hf_model_path ./hf_models/Qwen--Qwen3-0.6B --jax_model_path ./jax_models/Qwen--Qwen3-0.6B
+!python3 ./jllm/scripts/download_model.py --model-id "Qwen/Qwen3-4B" --dest-path ./hf_models/ 
+!python3 ./jllm/scripts/convert_weights.py --hf_model_path ./hf_models/Qwen--Qwen3-4B --jax_model_path ./jax_models/Qwen--Qwen3-4B
 ```
 
-It will download the `Qwen3 0.6B` model weights from HuggingFace, save them to `./hf_models/Qwen--Qwen3-0.6B` and finally convert those weights to a `JAX` compatible format.
+It will download the `Qwen3 4B` model weights from HuggingFace and convert those weights to a `JAX` compatible format (stored in `./jax_models/`).
 
+Finally, you can run the inference with a default prompt:
+
+```bash
+!python3 ./jllm/src/jllm/main.py --weights_path ./jax_models/Qwen--Qwen3-14B
+```
+
+> [!NOTE]
+> The default prompt asks three different questions to the LLM
+> ```python
+>  prompts = [
+>      "Tell me a nice phrase of humanity",
+>      "Do you like the old english language, why?",
+>      "Can you explain in German a phrase connected to German philosophy?",
+>    ]
+> ```
+
+You can also provide an extra argument `--user_input` with your extra prompt.
+It will be appended to the default ones
+
+```bash
+!python3 ./jllm/src/jllm/main.py --weights_path ./jax_models/Qwen--Qwen3-14B --user_input "Can you write a simple poem of the Spanish heritage in South America?"
+```
 
 ## Models programatic architecture
 
