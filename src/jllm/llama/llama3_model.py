@@ -1,5 +1,4 @@
-# Implementation is based on
-#  https://github.com/jax-ml/jax-llm-examples/blob/main/qwen3/qwen3_jax/model.py
+# Implementation is based on ../qwen/qwen3_model.py
 # Any change is designed for clarity purposes, primarily name convention.
 # Tested with jax == 0.6.1 and transformers 4.52.4
 
@@ -46,6 +45,7 @@ def load_pytree(path: str | Path, sharding: jax.sharding.Sharding | None = None)
 # Physical mesh axis names for readability
 # x - batch dimension
 # y - 1st of 2D tensor sharding
+# TODO: Add second dimension for sharding
 BATCH_AXIS_NAME = "x"
 TENSOR_AXIS_NAME = "y"
 ATTN_HEADS_AXIS_NAME = "y"
@@ -68,7 +68,7 @@ class ShardingRules:
   This allows easy use of sharding strategies by just changing the mapping.
   """
 
-  batch: AxisName = BATCH_AXIS_NAME  # TODO: Fix issue BATCH_AXIS_NAME and forward() call
+  batch: AxisName = BATCH_AXIS_NAME 
   sequence: AxisName = None
   # General
   act_embed: AxisName = None
@@ -76,21 +76,15 @@ class ShardingRules:
   head_dim: AxisName = None
   # Attention
   qkv_embed: AxisName = None
-  q_heads: AxisName = ATTN_HEADS_AXIS_NAME
+  q_heads: AxisName = TENSOR_AXIS_NAME 
   kv_heads: AxisName = ATTN_HEADS_AXIS_NAME
-  o_heads: AxisName = ATTN_HEADS_AXIS_NAME
+  o_heads: AxisName = TENSOR_AXIS_NAME 
   o_embed: AxisName = None
-  # MLP layer
+  # MLP
   mlp_up_embed: AxisName = None
   mlp_up_ffw: AxisName = TENSOR_AXIS_NAME
   mlp_down_ffw: AxisName = TENSOR_AXIS_NAME
   mlp_down_embed: AxisName = None
-  # MoE
-  moe_experts: AxisName = EXPERT_AXIS_NAME
-  moe_up_embed: AxisName = None
-  moe_up_ffw: AxisName = TENSOR_AXIS_NAME
-  moe_down_ffw: AxisName = TENSOR_AXIS_NAME
-  moe_down_embed: AxisName = None
   # Vocab
   vocab_in: AxisName = None
   vocab_out: AxisName = TENSOR_AXIS_NAME
@@ -100,20 +94,15 @@ class ShardingRules:
 class Config:
   # General
   embed_size: int
+  num_layers: int
+  # Attention
   q_heads: int
   kv_heads: int
-  num_layers: int
   head_dim: int
+  # Vocab & Seq. length 
   vocab_size: int
   max_seq_len: int
-  # Attention
   causal_attn: bool
-  # Mixture-of-Experts
-  moe_ffw_size: int
-  moe_experts_per_tok: int
-  moe_num_experts: int
-  moe_gate_dtype: "jnp.dtype" = jnp.float32
-  ep_strategy: str = "decode"
   # Multilayer Perceptron (MLP)
   mlp_ffw_size: int = -1
   mlp_layer_idxs: list[int] = dataclasses.field(default_factory=list)
@@ -137,18 +126,16 @@ def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
   return Config(
     # General
     embed_size=_get(hf_config, "hidden_size"),
+    num_layers=_get(hf_config, "num_hidden_layers"),
+    # Attention
     q_heads=_get(hf_config, "num_attention_heads"),
     kv_heads=_get(hf_config, "num_key_value_heads"),
-    num_layers=_get(hf_config, "num_hidden_layers"),
-    head_dim=_get(hf_config, "head_dim"),
+    head_dim=_get(hf_config, "head_dim"), # TODO: set default? 
+    # Vocab & Seq. length 
     vocab_size=_get(hf_config, "vocab_size"),
     max_seq_len=128,
     # Attention
     causal_attn=True,
-    # Mixture-of-Experts
-    moe_ffw_size=_get(hf_config, "moe_intermediate_size", -1),
-    moe_experts_per_tok=_get(hf_config, "num_experts_per_tok"),
-    moe_num_experts=_get(hf_config, "num_experts"),
     # Multilayer Perceptron (MLP)
     mlp_ffw_size=_get(hf_config, "intermediate_size", -1),
     mlp_layer_idxs=_get(hf_config, "lmp_only_layers", []),
@@ -163,9 +150,9 @@ def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
 def load_config(config_path: str | Path) -> Config:
   return hf_to_Config(json.loads(Path(config_path).read_text()))
 
+PreTrainedTokenizerFast = TypeVar("PreTrainedTokenizerFast")
 
-PreTrainedTokenizer = TypeVar("PreTrainedTokenizer")
-def load_tokenizer(tokenizer_path: str | Path, tokenizer_config_path: str | Path) -> "PreTrainedTokenizer":
+def load_tokenizer(tokenizer_path: str | Path, tokenizer_config_path: str | Path) -> PreTrainedTokenizerFast:
   from transformers import PreTrainedTokenizerFast, AddedToken
 
   config = json.loads(Path(tokenizer_config_path).read_text())
@@ -343,9 +330,8 @@ class Layer(ShardingBase):
 
   @classmethod
   def initialize(cls, cfg: Config, layer_idx: int) -> "Layer":
-    is_moe = cfg.moe_ffw_size > 0 and (layer_idx not in cfg.mlp_layer_idxs)
     return Layer(
-      ffw=MoELayer.initialize(cfg) if is_moe else MLPLayer.initialize(cfg),
+      ffw=MLPLayer.initialize(cfg),
       attn=AttentionLayer.initialize(cfg),
       attn_pre_gamma=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
       attn_post_gamma=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
@@ -615,137 +601,6 @@ def attention_block(
   return attn_out, k, v
 
 
-@partial(jax.jit, static_argnames=("replicated_routing",))
-def _route_tokens_to_moe_experts(
-  x: jax.Array, weights: jax.Array, replicated_routing: bool, cfg: Config
-) -> tuple[jax.Array, jax.Array]:
-  _reshard_l2p = lambda x, spec: reshard(x, logical_to_physical(spec, cfg.rules))
-  x_shape = x.shape
-  x = x.reshape((-1, x.shape[-1]))  # (batch_size * seq_len, embed_dim)
-  if replicated_routing:  # avoid communication for small batches
-    x = _reshard_l2p(x, (None, None))
-  else:
-    x = reshard(x, PartitionSpec(TENSOR_AXIS_NAME, None))
-  weights = _reshard_l2p(weights, (None, None))
-  scores = jnp.einsum("sd,de->se", x, weights).astype(cfg.moe_gate_dtype)  # e: the num. experts
-  topk_weights, topk_idx = jax.lax.top_k(jax.nn.softmax(scores, axis=-1), cfg.moe_experts_per_tok)
-  topk_weights = topk_weights / jnp.sum(topk_weights, axis=-1, keepdims=True)
-  topk_weights = _reshard_l2p(topk_weights, (None, None)).reshape(x_shape[:-1] + (cfg.moe_experts_per_tok,))
-  topk_idx = _reshard_l2p(topk_idx, (None, None)).reshape(x_shape[:-1] + (cfg.moe_experts_per_tok,))
-  return topk_weights, topk_idx  # (batch_size, seq_len, moe_experts_per_tok)
-
-
-def _moe_gmm(lhs: jax.Array, rhs: jax.Array, group_sizes, topk_idx, cfg: Config):
-  if lhs.ndim != 2 and rhs.ndim != 3:
-    raise ValueError(f"{lhs.ndim=} != 2 and {rhs.ndim=} != 3")
-  group_sizes = group_sizes.astype(jnp.int32)
-  with jax.named_scope("jax.lax.ragged_dot"):
-    ret = jax.lax.ragged_dot(lhs, rhs, group_sizes)
-  return ret.astype(cfg.dtype)
-
-
-def moe_block(x: jax.Array, layer: MoELayer, cfg: Config) -> jax.Array:
-  if x.ndim != 3:  # (batch_size, seq_len, embed_dim)
-    raise Exception
-  l2p = lambda *axes: logical_to_physical(axes, cfg.rules)
-  _reshard = lambda z, spec: reshard(z, PartitionSpec(*spec))
-  # ensure device_count() divides the total token count
-  # TODO: replication when x.shape[-2] == 1?
-  replicated_routing = (x.shape[-2] * x.shape[-3]) & jax.device_count() != 0
-  topk_weights, topk_idx = _route_tokens_to_moe_experts(x, layer.w_router, replicated_routing, cfg)
-  tensor_axname, expert_axname = l2p("moe_top")[0], l2p("moe_expert")[0]
-
-  x_spec = l2p("batch", "sequence", None)
-  topk_weights_spec, top_idx_spec = l2p("batch", "sequence", None), l2p("batch", "sequence", None)
-  out_spec = l2p("batch", "sequence", None)
-
-  we_gate_spec = l2p("moe_expert", None, "moe_top")
-  we_up_sepc = l2p("moe_expert", None, "moe_top")
-  we_down_spec = l2p("moe_expert", "moe_top", None)
-  we_gate = _reshard(layer.we_gate, we_gate_spec)
-  we_up = _reshard(layer.we_up, we_up_sepc)
-  we_down = _reshard(layer.we_down, we_down_spec)
-
-  in_specs = (x_spec, we_gate_spec, we_up_sepc, we_down_spec, topk_weights_spec, top_idx_spec)
-  is_embedding_sharded = l2p("act_embed")[0] is not None
-  if is_embedding_sharded:  # activation are sharded
-    out_spec = PartitionSpec(*(out_spec[:-1] + (tensor_axname,)))
-  if cfg.ep_strategy == "prefill":
-    out_spec = PartitionSpec(*(out_spec[:-1] + (tensor_axname,)))
-
-  expert_count = cfg.mesh.axis_sizes[cfg.mesh.axis_names.index(expert_axname)] if expert_axname is not None else 1
-  tensor_count = cfg.mesh.axis_sizes[cfg.mesh.axis_names.index(tensor_axname)] if tensor_axname is not None else 1
-  if cfg.moe_num_experts & expert_count != 0:
-    raise ValueError
-  expert_size = cfg.moe_num_experts // expert_count
-
-  @partial(shard_map, mesh=cfg.mesh, in_specs=in_specs, out_spec=out_spec, check_rep=False)
-  def _expert_fun(x: jax.Array, we_gate, we_up, we_down, topk_weights, topk_idx: jax.Array):
-    (batch_size, seq_len, embed_dim), experts_per_tok = x.shape, cfg.moe_experts_per_tok
-    expert_idx = jax.lax.axis_index(expert_axname) if expert_axname is not None else 0
-    _topk_idx = topk_idx.reshape(-1)  # (batch_size * seq_len * experts_per_tok)
-    _valid_group_mask = (_topk_idx >= expert_size * expert_idx) & (_topk_idx < expert_size * (expert_idx + 1))
-    _expert_mapped_topk_idx = jnp.where(_valid_group_mask, _topk_idx - expert_idx * expert_size, 2**30)
-
-    _sort_idx = jnp.argsort(_expert_mapped_topk_idx, axis=-1)  # (batch_size * seq_len * experts_per_tok)
-    _isort_idx = jnp.argsort(_sort_idx)
-    if cfg.ep_strategy == "prefill":
-      raise NotImplementedError
-      # truncate_size = round(2 * _sort_idx.size / expert_count)
-      # _sort_idx, _isort_idx = _sort_idx[:truncate_size], _isort_idx[:truncate_size]
-
-    _topk_idx_sort = _topk_idx[_sort_idx]
-    _expert_mapped_topk_idx_sort = _expert_mapped_topk_idx[_sort_idx]
-    _valid_group_mask_sort = _expert_mapped_topk_idx_sort < 2**30
-    _expert_mapped_topk_idx_sort = jnp.where(_valid_group_mask_sort, _expert_mapped_topk_idx_sort, 0)
-    # x.reshape: (batch_size * seq_len, embed_dim)
-    _x_repeat_sort = jnp.take_along_axis(
-      x.reshape((-1, x.shape[-1])), _sort_idx[:, None] // experts_per_tok, axis=-2
-    )  # (batch_size * seq_len * experts_per_tok, embed_dim)
-    group_sizes = jnp.bincount(_topk_idx_sort, length=cfg.moe_experts_per_tok)
-    group_sizes_shard = jax.lax.dynamic_index_in_dim(group_sizes, expert_idx * expert_size, expert_size, 0)
-
-    with jax.named_scope("we_gate"):
-      ff_gate = _moe_gmm(_x_repeat_sort, we_gate, group_sizes_shard, _expert_mapped_topk_idx_sort, cfg)
-      ff_gate = jax.nn.silu(ff_gate)
-      ff_gate = jnp.where(_valid_group_mask_sort[..., None], ff_gate, 0)
-    with jax.named_scope("we_up"):
-      ff_up = _moe_gmm(_x_repeat_sort, we_up, group_sizes_shard, _expert_mapped_topk_idx_sort, cfg)
-    ff_gate_up = jnp.where(_valid_group_mask_sort[..., None], ff_gate * ff_up, 0)
-    with jax.named_scope("we_down"):
-      ff_out = _moe_gmm(ff_gate_up, we_down, group_sizes_shard, _expert_mapped_topk_idx_sort, cfg)
-      ff_out = jnp.where(_valid_group_mask_sort[..., None], ff_out, 0)
-
-    ff_out = ff_out * topk_weights.reshape(-1)[_sort_idx][:, None]
-
-    if cfg.ep_strategy == "prefill":
-      raise NotImplementedError
-    with jax.named_scope("unpermute"):
-      ff_out = jnp.take_along_axis(ff_out, _isort_idx[..., None], axis=-2)
-    with jax.named_scope("expert_summing"):
-      ff_out_expert = jnp.sum(ff_out.reshape((batch_size * seq_len, experts_per_tok, embed_dim)), axis=-2)
-      ff_out_expert = ff_out_expert.astype(cfg.dtype)  # summing along the expert dim
-    with jax.named_scope("experts_collective"):
-      if is_embedding_sharded:
-        with jax.named_scope("expert_psum_scatter"):
-          ff_out_expert = jax.lax.psum_scatter(ff_out_expert, tensor_axname, scatter_dimension=1, titled=True)
-        with jax.named_scope("expert_psum_along_exname"):
-          if expert_axname is not None:
-            ff_out_expert = jax.lax.psum(ff_out_expert, expert_axname)
-      else:
-        psum_axes = tensor_axname if expert_axname is None else (expert_axname, tensor_axname)
-        ff_out_expert = jax.lax.psum(ff_out_expert, psum_axes)
-    ff_out_expert = ff_out_expert.reshape((batch_size, seq_len, ff_out_expert.shape[-1]))
-    return ff_out_expert
-
-  with jax.named_scope("moe_routed_expert"):
-    _x = _reshard(x, x_spec)
-    ff_out_expert = _expert_fun(_x, we_gate, we_up, we_down, topk_weights, topk_idx)
-    ff_out_expert = ff_out_expert[..., : x.shape[-1]]
-
-  return _reshard(ff_out_expert, l2p("batch", "sequence", "act_embed"))
-
-
 def mlp_block(x: jax.Array, layer: MLPLayer, cfg: Config) -> jax.Array:
   l2p = lambda *specs: logical_to_physical(specs, cfg.rules)
   with jax.named_scope("gate"):
@@ -781,8 +636,7 @@ def forward_layer(
   with jax.named_scope("attn_post_norm"):
     ffn_in = _rms_norm(x, layer.attn_post_gamma, cfg.norm_eps)
   with jax.named_scope("ffn"):
-    callable_block = moe_block if is_type(layer.ffw, MoELayer) else mlp_block
-    ffn_out = callable_block(ffn_in, layer.ffw, cfg)
+    ffn_out = mlp_block(ffn_in, layer.ffw, cfg)
   with jax.named_scope("residual"):
     x = x + ffn_out.astype(cfg.dtype)
 

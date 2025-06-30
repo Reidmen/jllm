@@ -16,10 +16,12 @@ def main(model_path: str | Path, chkpt_path: str | Path):
   assert len(config_files) == 1, "Only one config.json file allowed."
   config = AutoConfig.from_pretrained(config_files[0])
 
-  # Load weights. TODO: Quantized version
+  # TODO: Quantized version
   if "llama" in config.model_type.lower():
-    raise NotImplementedError
-    weights = LlamaWeights.initialize(cfg)
+    from jllm.llama.llama3_model import Weights, hf_to_Config, save_pytree
+    from jllm.llama.utils import convert_model_weights
+    cfg = hf_to_Config(config)
+    weights = Weights.initialize(cfg)
   elif "qwen" in config.model_type.lower():
     from jllm.qwen_model import Weights, hf_to_Config, save_pytree
     from jllm.qwen_utils import convert_model_weights 
