@@ -689,8 +689,9 @@ def moe_block(x: jax.Array, layer: MoELayer, cfg: Config) -> jax.Array:
     _sort_idx = jnp.argsort(_expert_mapped_topk_idx, axis=-1)  # (batch_size * seq_len * experts_per_tok)
     _isort_idx = jnp.argsort(_sort_idx)
     if cfg.ep_strategy == "prefill":
-      truncate_size = round(2 * _sort_idx.size / expert_count)
-      _sort_idx, _isort_idx = _sort_idx[:truncate_size], _isort_idx[:truncate_size]
+      raise NotImplementedError
+      # truncate_size = round(2 * _sort_idx.size / expert_count)
+      # _sort_idx, _isort_idx = _sort_idx[:truncate_size], _isort_idx[:truncate_size]
 
     _topk_idx_sort = _topk_idx[_sort_idx]
     _expert_mapped_topk_idx_sort = _expert_mapped_topk_idx[_sort_idx]

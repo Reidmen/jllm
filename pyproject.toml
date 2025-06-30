@@ -10,12 +10,14 @@ dependencies = [
     "transformers",
     "tiktoken",
     "jaxtyping",
+    "tqdm",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytorch", # required for compatibility test
+    "torch",  # required for compatibility test
     "pytest",
+    "ruff",
 ]
 
 [build-system]

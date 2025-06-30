@@ -4,8 +4,6 @@ import shutil
 
 
 def main(model_path: str | Path, chkpt_path: str | Path):
-  from jllm.qwen_model import Weights, hf_to_Config, save_pytree
-  from jllm.qwen_utils import convert_model_weights
   from transformers import AutoConfig
   from safetensors import safe_open
   from tqdm import tqdm
@@ -17,10 +15,18 @@ def main(model_path: str | Path, chkpt_path: str | Path):
   config_files = list(model_path.glob("**/config.json"))
   assert len(config_files) == 1, "Only one config.json file allowed."
   config = AutoConfig.from_pretrained(config_files[0])
-  cfg = hf_to_Config(config)
 
   # Load weights. TODO: Quantized version
-  weights = Weights.initialize(cfg)
+  if "llama" in config.model_type.lower():
+    raise NotImplementedError
+    weights = LlamaWeights.initialize(cfg)
+  elif "qwen" in config.model_type.lower():
+    from jllm.qwen_model import Weights, hf_to_Config, save_pytree
+    from jllm.qwen_utils import convert_model_weights 
+    cfg = hf_to_Config(config)
+    weights = Weights.initialize(cfg)
+  else:
+    raise NotImplementedError
 
   if not chkpt_path.exists():
     model = {}
