@@ -2,14 +2,14 @@ import argparse
 import os
 import pathlib
 
-HF_TOKEN = os.getenv("HF_TOKEN", None) 
-# TODO: Are there any distill Llama3.2 models? 
-example_models = [ # Qwen3 & Llama3 
+HF_TOKEN = os.getenv("HF_TOKEN", None)
+# TODO: Are there any distill Llama3.2 models?
+example_models = [  # Qwen3 & Llama3
   "Qwen/Qwen3-0.6B",
   "Qwen/Qwen3-1.7B",
-  "Qwen/Qwen3-8B", # Max for Colab: 8B at 16bit -> 32Gb VRAM
+  "Qwen/Qwen3-8B",  # Max for Colab: 8B at 16bit -> 32Gb VRAM
   "Qwen/Qwen3-14B",
-  "Qwen/Qwen3-30B-A3B", # MoE: Heavy model, 30B at 16bit -> min 120Gb VRAM
+  "Qwen/Qwen3-30B-A3B",  # MoE: Heavy model, 30B at 16bit -> min 120Gb VRAM
   "meta-llama/Llama-3.2-1B",
   "meta-llama/Llama-3.2-3B",
 ]

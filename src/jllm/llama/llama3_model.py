@@ -68,7 +68,7 @@ class ShardingRules:
   This allows easy use of sharding strategies by just changing the mapping.
   """
 
-  batch: AxisName = BATCH_AXIS_NAME 
+  batch: AxisName = BATCH_AXIS_NAME
   sequence: AxisName = None
   # General
   act_embed: AxisName = None
@@ -76,9 +76,9 @@ class ShardingRules:
   head_dim: AxisName = None
   # Attention
   qkv_embed: AxisName = None
-  q_heads: AxisName = TENSOR_AXIS_NAME 
+  q_heads: AxisName = TENSOR_AXIS_NAME
   kv_heads: AxisName = ATTN_HEADS_AXIS_NAME
-  o_heads: AxisName = TENSOR_AXIS_NAME 
+  o_heads: AxisName = TENSOR_AXIS_NAME
   o_embed: AxisName = None
   # MLP
   mlp_up_embed: AxisName = None
@@ -99,7 +99,7 @@ class Config:
   q_heads: int
   kv_heads: int
   head_dim: int
-  # Vocab & Seq. length 
+  # Vocab & Seq. length
   vocab_size: int
   max_seq_len: int
   causal_attn: bool
@@ -130,8 +130,8 @@ def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
     # Attention
     q_heads=_get(hf_config, "num_attention_heads"),
     kv_heads=_get(hf_config, "num_key_value_heads"),
-    head_dim=_get(hf_config, "head_dim"), # TODO: set default? 
-    # Vocab & Seq. length 
+    head_dim=_get(hf_config, "head_dim"),  # TODO: set default?
+    # Vocab & Seq. length
     vocab_size=_get(hf_config, "vocab_size"),
     max_seq_len=128,
     # Attention
@@ -149,6 +149,7 @@ def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
 
 def load_config(config_path: str | Path) -> Config:
   return hf_to_Config(json.loads(Path(config_path).read_text()))
+
 
 PreTrainedTokenizerFast = TypeVar("PreTrainedTokenizerFast")
 
@@ -281,6 +282,7 @@ class AttentionLayer(ShardingBase):
         (cfg.q_heads, cfg.head_dim, cfg.embed_size), cfg.dtype, ("o_heads", "head_dim", "o_embed"), _init(1, 2)
       ),
     )
+
 
 @register_pytree_struct
 class Layer(ShardingBase):

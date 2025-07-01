@@ -165,7 +165,9 @@ def load_config(config_path: str | Path) -> Config:
 
 
 PreTrainedTokenizer = TypeVar("PreTrainedTokenizer")
-def load_tokenizer(tokenizer_path: str | Path, tokenizer_config_path: str | Path) -> "PreTrainedTokenizer":
+
+
+def load_tokenizer(tokenizer_path: str | Path, tokenizer_config_path: str | Path) -> PreTrainedTokenizer:
   from transformers import PreTrainedTokenizerFast, AddedToken
 
   config = json.loads(Path(tokenizer_config_path).read_text())

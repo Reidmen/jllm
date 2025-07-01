@@ -1,4 +1,4 @@
-"""Main LLM call, requires 8 devices (e.g. Colab instance). No quantized."""
+"""Main Qwen LLM call, requires >= 2 devices (e.g. Colab instance). No quantized."""
 
 import argparse
 import json
@@ -6,13 +6,13 @@ import jax
 import dataclasses
 import numpy
 from pathlib import Path
-from jllm.qwen_model import Config, KVCache, Weights, decode_step, hf_to_Config, load_pytree, load_tokenizer, prefill
+from jllm.qwen.qwen3_model import  Config, KVCache, Weights, hf_to_Config
+from jllm.qwen.qwen3_model import  decode_step, load_pytree, load_tokenizer, prefill,PreTrainedTokenizer
 
 TOKEN_BLOCK = 128
 
 
-def encode_input(tokenizer, texts, pad_id: int = 0):
-  # tokenizer type: PretrainedTokenizer
+def encode_input(tokenizer: PreTrainedTokenizer, texts: list[str], pad_id: int = 0):
   if not isinstance(texts, list):
     raise TypeError
   inputs = [
@@ -36,15 +36,14 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   weights = load_pytree(path, Weights.initialize_shardings(cfg))
 
   prompts = [
-      "Tell me a nice phrase of humanity",
-      "Do you like the old english language, why?",
-      "Can you explain in German a phrase connected to German philosophy?",
-    ]
+    "Tell me a nice phrase of humanity",
+    "Do you like the old english language, why?",
+    "Can you explain in German a phrase connected to German philosophy?",
+  ]
   if isinstance(user_text, str):
     prompts.append(f"Provide an answer to this: {user_text}")
 
   input = encode_input(tokenizer, prompts)
-  # TODO: KVCache, prefill and decode step
   with jax.sharding.use_mesh(cfg.mesh):
     batch_size, seq_len = input.shape[0], cfg.max_seq_len
     zero_cache = KVCache.initialize_with_key(jax.random.PRNGKey(0), cfg, batch_size, seq_len)

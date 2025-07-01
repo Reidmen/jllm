@@ -20,11 +20,13 @@ def main(model_path: str | Path, chkpt_path: str | Path):
   if "llama" in config.model_type.lower():
     from jllm.llama.llama3_model import Weights, hf_to_Config, save_pytree
     from jllm.llama.utils import convert_model_weights
+
     cfg = hf_to_Config(config)
     weights = Weights.initialize(cfg)
   elif "qwen" in config.model_type.lower():
-    from jllm.qwen_model import Weights, hf_to_Config, save_pytree
-    from jllm.qwen_utils import convert_model_weights 
+    from jllm.qwen.qwen3_model import Weights, hf_to_Config, save_pytree
+    from jllm.qwen.utils import convert_model_weights
+
     cfg = hf_to_Config(config)
     weights = Weights.initialize(cfg)
   else:

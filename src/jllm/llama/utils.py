@@ -115,10 +115,15 @@ def _map_weight(source_key, value: torch.Tensor, custom_transform_map: dict[str,
 
 
 def convert_model_weights(
-  layer: MLPLayer | Layer | Weights, reference_layer: torch.nn.Module, cfg: Config, device: jax.Device | None = None, sequential: bool = True 
+  layer: MLPLayer | Layer | Weights,
+  reference_layer: torch.nn.Module,
+  cfg: Config,
+  device: jax.Device | None = None,
+  sequential: bool = True,
 ):
   from concurrent.futures import ThreadPoolExecutor
   from tqdm import tqdm
+
   device = device if device is not None else jax.devices("cpu")[0]
   torch_params = dict(
     reference_layer.named_parameters() if hasattr(reference_layer, "named_parameters") else reference_layer
@@ -147,7 +152,7 @@ def convert_model_weights(
     for tkey, tweight in torch_params.items():
       convert_weight_per_thread(tkey, tweight)
   else:
-    future_works, executor = [], ThreadPoolExecutor(max_workers=4) 
+    future_works, executor = [], ThreadPoolExecutor(max_workers=4)
     for tkey, tweight in torch_params.items():
       future_works.append(executor.submit(convert_weight_per_thread, tkey, tweight))
     for future in tqdm(future_works, total=len(future_works), desc="Converting weights"):

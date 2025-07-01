@@ -14,7 +14,7 @@ try:
 except ModuleNotFoundError:
   raise ImportError(f"torch required for {__file__}")
 
-from jllm.qwen_model import ArrayInfo, Config, Layer, MLPLayer, Weights
+from jllm.qwen.qwen3_model import ArrayInfo, Config, Layer, MLPLayer, Weights
 
 is_leaf = lambda x: isinstance(x, ArrayInfo)
 jax_to_torch = lambda x: torch.from_dlpack(x)
