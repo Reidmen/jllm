@@ -41,27 +41,22 @@ _HF_KEY_MAPPING = {
   r"model\.layers\.([0-9]+)\.self_attn\.k_proj\.weight": r"layers.\1.attn.k",
   r"model\.layers\.([0-9]+)\.self_attn\.v_proj\.weight": r"layers.\1.attn.v",
   r"model\.layers\.([0-9]+)\.self_attn\.o_proj\.weight": r"layers.\1.attn.o",
-  # Attention norms: renamed with suffix gamma
-  r"model\.layers\.([0-9]+)\.self_attn\.q_norm\.weight": r"layers.\1.attn.q_gamma",
-  r"model\.layers\.([0-9]+)\.self_attn\.k_norm\.weight": r"layers.\1.attn.k_gamma",
   # Layer norm (pre/post attention)
   r"model\.layers\.([0-9]+)\.input_layernorm\.weight": r"layers.\1.attn_pre_gamma",
   r"model\.layers\.([0-9]+)\.post_attention_layernorm\.weight": r"layers.\1.attn_post_gamma",
-  # MoE router
-  r"model\.layers\.([0-9]+)\.mlp\.gate\.weight": r"layers.\1.ffw.w_router",
   # MLP
   r"model\.layers\.([0-9]+)\.mlp\.gate_proj\.weight": r"layers.\1.ffw.w_gate",
   r"model\.layers\.([0-9]+)\.mlp\.up_proj\.weight": r"layers.\1.ffw.w_up",
   r"model\.layers\.([0-9]+)\.mlp\.down_proj\.weight": r"layers.\1.ffw.w_down",
   # MLP norms: renamed with suffix gamma
   r"model\.norm\.weight": "gamma_final",
-  # LM head
-  r"lm_head\.weight": "lm_head",
+  # # LM head -> lm_head == embed_tokens for Llama-3.2 1B & 3B
+  # r"lm_head\.weight": "lm_head",
 }
 
 
 def convert_weight(key: str, value: torch.Tensor, cfg: Config):
-  """Preserves HF checkpoint naming convention"""
+  """Uses and preserves HF checkpoint naming convention"""
   value = value.detach()
   # Attention
   if re.search(r"q_proj\.weight", key) is not None:
@@ -84,9 +79,10 @@ def convert_weight(key: str, value: torch.Tensor, cfg: Config):
   elif re.search(r"embed_tokens", key) is not None:
     assert value.shape == (cfg.vocab_size, cfg.embed_size)
     return torch_to_jax(value)
-  elif re.search(r"lm_head", key) is not None:
-    assert value.shape == (cfg.vocab_size, cfg.embed_size)
-    return torch_to_jax(value.T)
+  # lm_head == embed_tokens for LLama 3.2
+  # elif re.search(r"lm_head", key) is not None:
+  #   assert value.shape == (cfg.vocab_size, cfg.embed_size)
+  #   return torch_to_jax(value.T)
   elif re.search(r"(q|k)_norm", key) is not None:
     assert value.shape == (cfg.head_dim,)
     return torch_to_jax(value.T)
@@ -119,7 +115,7 @@ def _map_weight(source_key, value: torch.Tensor, custom_transform_map: dict[str,
 
 
 def convert_model_weights(
-  layer: MLPLayer | Layer | Weights, reference_layer: torch.nn.Module, cfg: Config, device: jax.Device | None = None, sequential: bool = False
+  layer: MLPLayer | Layer | Weights, reference_layer: torch.nn.Module, cfg: Config, device: jax.Device | None = None, sequential: bool = True 
 ):
   from concurrent.futures import ThreadPoolExecutor
   from tqdm import tqdm
@@ -158,7 +154,8 @@ def convert_model_weights(
       future.result()
 
   if not all(v is not None for v in new_params.values()):
-    raise ValueError(str({k: v for k, v in new_params.items() if v is not None}))
+    # raise ValueError(str({k: v for k, v in new_params.items() if v is not None}))
+    raise ValueError(f"{[k for k, v in new_params.items() if v is not None]} are None")
 
   for (key, param), new_param in zip(layer_params.items(), new_params.values()):
     if param.shape != new_param.shape:

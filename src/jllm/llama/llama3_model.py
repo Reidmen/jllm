@@ -263,8 +263,6 @@ class AttentionLayer(ShardingBase):
   k: jax.Array | ArrayInfo
   v: jax.Array | ArrayInfo
   o: jax.Array | ArrayInfo
-  q_gamma: jax.Array | ArrayInfo
-  k_gamma: jax.Array | ArrayInfo
 
   @classmethod
   def initialize(cls, cfg: Config) -> "AttentionLayer":
@@ -282,48 +280,11 @@ class AttentionLayer(ShardingBase):
       o=ArrayInfo(
         (cfg.q_heads, cfg.head_dim, cfg.embed_size), cfg.dtype, ("o_heads", "head_dim", "o_embed"), _init(1, 2)
       ),
-      q_gamma=ArrayInfo((cfg.head_dim,), cfg.dtype, ("head_dim",), jax.nn.initializers.ones),
-      k_gamma=ArrayInfo((cfg.head_dim,), cfg.dtype, ("head_dim",), jax.nn.initializers.ones),
     )
-
-
-@register_pytree_struct
-class MoELayer(ShardingBase):
-  w_router: jax.Array | ArrayInfo  # router
-  we_gate: jax.Array | ArrayInfo  # expert
-  we_up: jax.Array | ArrayInfo  # expert
-  we_down: jax.Array | ArrayInfo  # expert
-
-  @classmethod
-  def initialize(cls, cfg: Config) -> "MoELayer":
-    _einit = jax.nn.initializers.he_normal(in_axis=0, out_axis=(1, 2))
-    _sinit = jax.nn.initializers.he_normal(in_axis=0, out_axis=1)
-    return MoELayer(
-      w_router=ArrayInfo((cfg.embed_size, cfg.moe_num_experts), cfg.moe_gate_dtype, ("moe_up_embed", None), _sinit),
-      we_gate=ArrayInfo(
-        (cfg.moe_num_experts, cfg.embed_size, cfg.moe_ffw_size),
-        cfg.dtype,
-        ("moe_experts", "moe_up_embed", "moe_up_ffw"),
-        _einit,
-      ),
-      we_up=ArrayInfo(
-        (cfg.moe_num_experts, cfg.embed_size, cfg.moe_ffw_size),
-        cfg.dtype,
-        ("moe_experts", "moe_up_embed", "moe_up_ffw"),
-        _einit,
-      ),
-      we_down=ArrayInfo(
-        (cfg.moe_num_experts, cfg.moe_ffw_size, cfg.embed_size),
-        cfg.dtype,
-        ("moe_experts", "moe_down_ffw", "moe_down_embed"),
-        _einit,
-      ),
-    )
-
 
 @register_pytree_struct
 class Layer(ShardingBase):
-  ffw: MLPLayer | MoELayer
+  ffw: MLPLayer
   attn: AttentionLayer
   attn_pre_gamma: jax.Array | ArrayInfo
   attn_post_gamma: jax.Array | ArrayInfo
@@ -343,7 +304,7 @@ class Weights(ShardingBase):
   layers: list[Layer]
   embedding: jax.Array | ArrayInfo
   gamma_final: jax.Array | ArrayInfo
-  lm_head: jax.Array | ArrayInfo
+  # lm_head: jax.Array | ArrayInfo
 
   @classmethod
   def initialize(cls, cfg: Config):
@@ -352,7 +313,7 @@ class Weights(ShardingBase):
       layers=[Layer.initialize(cfg, layer_idx) for layer_idx in range(cfg.num_layers)],
       embedding=ArrayInfo((cfg.vocab_size, cfg.embed_size), cfg.dtype, ("vocab_in", "vocab_in"), _init(0, 1)),
       gamma_final=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
-      lm_head=ArrayInfo((cfg.embed_size, cfg.vocab_size), cfg.dtype, ("vocab_in", "vocab_out"), _init(0, 1)),
+      # lm_head=ArrayInfo((cfg.embed_size, cfg.vocab_size), cfg.dtype, ("vocab_in", "vocab_out"), _init(0, 1)),
     )
 
 
@@ -565,7 +526,7 @@ def attention_block(
     v = jnp.einsum("btd,dnh->bnth", x, attn_layer.v).astype(cfg.dtype)
   # Apply rotary embedding
   with jax.named_scope("rope"):
-    q, k = _rms_norm(q, attn_layer.q_gamma, cfg.norm_eps), _rms_norm(k, attn_layer.k_gamma, cfg.norm_eps)
+    q, k = _rms_norm(q, None, cfg.norm_eps), _rms_norm(k, None, cfg.norm_eps)
     q, k = _apply_rotary_embedding(q, sin, cos), _apply_rotary_embedding(k, sin, cos)
 
   with jax.named_scope("cache"):
@@ -686,9 +647,9 @@ def forward(
 
   # Final layer norm
   x = _rms_norm(x, weights.gamma_final, cfg.norm_eps)
-  # Project to vocab
-  # (batch_size, seq_len, head_dim) x (head_dim, vocab) -> (batch_size, seq_len, vocab)
-  logits = jnp.einsum("btd,dv->btv", x, weights.lm_head, out_sharding=PartitionSpec())
+  # Project to vocab using embedding layer (only for Llama 3.2 1B & 3B)
+  # (batch_size, seq_len, embed_size) x (embed_size, vocab) -> (batch_size, seq_len, vocab)
+  logits = jnp.einsum("btd,vd->btv", x, weights.embedding, out_sharding=PartitionSpec())
   if cache is not None:
     # sum over valid segments (i.e. non padding tokens)
     # (batch_size, seq_len) -> (batch_size,)
