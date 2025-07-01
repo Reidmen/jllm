@@ -833,7 +833,7 @@ def forward(
   # Final layer norm
   x = _rms_norm(x, weights.gamma_final, cfg.norm_eps)
   # Project to vocab
-  # (batch_size, seq_len, head_dim) x (head_dim, vocab) -> (batch_size, seq_len, vocab)
+  # (batch_size, seq_len, embed_size) x (embed_size, vocab) -> (batch_size, seq_len, vocab)
   logits = jnp.einsum("btd,dv->btv", x, weights.lm_head, out_sharding=PartitionSpec())
   if cache is not None:
     # sum over valid segments (i.e. non padding tokens)

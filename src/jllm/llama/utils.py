@@ -154,7 +154,6 @@ def convert_model_weights(
       future.result()
 
   if not all(v is not None for v in new_params.values()):
-    # raise ValueError(str({k: v for k, v in new_params.items() if v is not None}))
     raise ValueError(f"{[k for k, v in new_params.items() if v is not None]} are None")
 
   for (key, param), new_param in zip(layer_params.items(), new_params.values()):
