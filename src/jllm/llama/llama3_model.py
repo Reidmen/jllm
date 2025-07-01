@@ -115,8 +115,12 @@ class Config:
   # Sharding
   rules: ShardingRules = dataclasses.field(default_factory=ShardingRules)
   mesh: jax.sharding.Mesh | None = None
-  # RoPE
+  # RoPE - TODO: better default values?
   rope_theta: float = 500000.0
+  rope_scaling_factor: float = 1.0
+  rope_scaling_lowfreq_factor: float = 1.0
+  rope_scaling_highfreq_factor: float = 1.0
+  rope_scaling_original_max_position_embeddings: int = 8192
 
 
 def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
@@ -130,7 +134,7 @@ def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
     # Attention
     q_heads=_get(hf_config, "num_attention_heads"),
     kv_heads=_get(hf_config, "num_key_value_heads"),
-    head_dim=_get(hf_config, "head_dim"),  # TODO: set default?
+    head_dim=_get(hf_config, "head_dim"),
     # Vocab & Seq. length
     vocab_size=_get(hf_config, "vocab_size"),
     max_seq_len=128,
@@ -139,11 +143,17 @@ def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
     # Multilayer Perceptron (MLP)
     mlp_ffw_size=_get(hf_config, "intermediate_size", -1),
     mlp_layer_idxs=_get(hf_config, "lmp_only_layers", []),
-    # Kernel Config
+    # config
     dtype=jnp.bfloat16,
     norm_eps=_get(hf_config, "rms_norm_eps"),
-    # RoPE
+    # Llama 3 RoPE 
     rope_theta=_get(hf_config, "rope_theta"),
+    rope_scaling_factor=_get(hf_config, "rope_scaling")["factor"],
+    rope_scaling_lowfreq_factor=_get(hf_config, "rope_scaling")["low_freq_factor"],
+    rope_scaling_highfreq_factor=_get(hf_config, "rope_scaling")["high_freq_factor"],
+    rope_scaling_original_max_position_embeddings=_get(hf_config, "rope_scaling")[
+      "original_max_position_embeddings"
+    ]
   )
 
 
@@ -354,6 +364,23 @@ def _rms_norm(x: jax.Array, gamma: jax.Array | None, eps: jax.Array | float) -> 
   rms = jnp.sqrt(jnp.mean(jnp.astype(x, jnp.float32) ** 2, axis=-1, keepdims=True) + eps)
   return jnp.astype((gamma if gamma is not None else 1) * x / rms, jnp.bfloat16)
 
+def _llama_rope_positional_correction(rotational_frequency: jax.Array, cfg: Config) -> jax.Array:
+  factor = cfg.rope_scaling_factor
+  lowfreq_factor = cfg.rope_scaling_lowfreq_factor
+  highfreq_factor = cfg.rope_scaling_highfreq_factor
+  original_context_len = cfg.rope_scaling_original_max_position_embeddings
+
+  lowfreq_wavelen = original_context_len / lowfreq_factor
+  highfreq_wavelen = original_context_len / highfreq_factor
+  wavelen = 2 * math.pi / rotational_frequency
+  div_freq_llama = jnp.where(wavelen > lowfreq_wavelen, rotational_frequency / factor, rotational_frequency)
+  # interpolate in the opposite of jnp.where
+  smooth_factor = (original_context_len / wavelen - lowfreq_factor) / (highfreq_factor - lowfreq_factor)
+  div_smooth_freq = (1 - smooth_factor) * div_freq_llama / factor + smooth_factor * div_freq_llama
+  is_midfreq = ~(wavelen < highfreq_wavelen) * ~(wavelen > lowfreq_wavelen)
+  div_freq_llama = jnp.where(is_midfreq, div_smooth_freq, div_freq_llama)
+  return div_freq_llama
+
 
 def _generate_positional_embeddings(positions: jax.Array, head_dim: int, cfg: Config) -> tuple[jax.Array, jax.Array]:
   """Generate sin/cos for Rotary Positional Embeddings
@@ -366,6 +393,7 @@ def _generate_positional_embeddings(positions: jax.Array, head_dim: int, cfg: Co
   fraction = jnp.arange(0, head_dim, 2, dtype=jnp.float32) / head_dim  # head_dim -> features
   timescale = cfg.rope_theta**fraction
   rotational_frequency = 1.0 / timescale
+  rotational_frequency = _llama_rope_positional_correction(rotational_frequency, cfg)
   # Using highest precision for sin (bfloat16 is VERY BAD)
   sinusoid_inp = jnp.einsum(
     "bt,k->btk",
