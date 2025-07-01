@@ -9,7 +9,7 @@ from pathlib import Path
 from jllm.llama.llama3_model import Config, KVCache, Weights, hf_to_Config, PreTrainedTokenizerFast
 from jllm.llama.llama3_model import decode_step, load_pytree, load_tokenizer, prefill
 
-TOKEN_BLOCK = 128
+TOKEN_BLOCK = 64 
 
 
 def encode_input(tokenizer: PreTrainedTokenizerFast, texts: list[str], pad_id: int = 0):
@@ -43,7 +43,8 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   if isinstance(user_text, str):
     prompts.append(f"Provide an answer to this: {user_text}")
 
-  print(f"[Prompt] ({i}) {prompt_i}\n" for i, prompt_i in enumerate(prompts))
+  for i, prompt_i in enumerate(prompts):
+    print(f"[Prompt] ({i}) {prompt_i}\n")
   input = encode_input(tokenizer, prompts)
   with jax.sharding.use_mesh(cfg.mesh):
     batch_size, seq_len = input.shape[0], cfg.max_seq_len
@@ -60,7 +61,8 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
 
   responses = [tokenizer.decode(row) for row in tokens]
   print("Llama 3.2 Model Responses:\n")
-  print(f"[Response] ({i}) {response_i}\n" for i, response_i in enumerate(responses))
+  for i, response_i in enumerate(responses):
+    print(f"[Response] ({i}) {response_i}\n")
 
 
 if __name__ == "__main__":
