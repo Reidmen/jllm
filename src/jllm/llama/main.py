@@ -9,15 +9,18 @@ from pathlib import Path
 from jllm.llama.llama3_model import Config, KVCache, Weights, hf_to_Config, PreTrainedTokenizerFast
 from jllm.llama.llama3_model import decode_step, load_pytree, load_tokenizer, prefill
 
-TOKEN_BLOCK = 64 
+TOKEN_BLOCK = 32
 
 
 def encode_input(tokenizer: PreTrainedTokenizerFast, texts: list[str], pad_id: int = 0):
   if not isinstance(texts, list):
     raise TypeError
   inputs = [
-    tokenizer.apply_chat_template([{"role": "user", "content": text}], add_generation_prompt=True) for text in texts
+    tokenizer.apply_chat_template(
+    [{"role": "user", "content": text}], tokenize=True, add_generation_prompt=True)
+    for text in texts
   ]
+  
   max_len = max([len(x) for x in inputs])
   inputs = [(max_len - len(x)) * [pad_id] + x for x in inputs]
   return numpy.array(inputs)
@@ -36,9 +39,9 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   weights = load_pytree(path, Weights.initialize_shardings(cfg))
 
   prompts = [
-    "Tell me about the origins of the Canadian society",
+    "Tell me a joke.",
     "Do you like the old english language, why?",
-    "Can you explain in German a phrase connected to German philosophy?",
+    "Can you give me a simple German phrase.",
   ]
   if isinstance(user_text, str):
     prompts.append(f"Provide an answer to this: {user_text}")
@@ -49,7 +52,7 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   with jax.sharding.use_mesh(cfg.mesh):
     batch_size, seq_len = input.shape[0], cfg.max_seq_len
     zero_cache = KVCache.initialize_with_key(jax.random.PRNGKey(0), cfg, batch_size, seq_len)
-    next_tokens, _logits, cache = prefill(input, weights, zero_cache, cfg)
+    next_tokens, _, cache = prefill(input, weights, zero_cache, cfg)
     curr_tokens = next_tokens.at[:, cache.length - 1 : cache.length].get(
       out_sharding=jax.sharding.PartitionSpec(None, None)
     )
