@@ -556,7 +556,6 @@ def attention_block(
     v = jnp.einsum("btd,dnh->bnth", x, attn_layer.v).astype(cfg.dtype)
   # Apply rotary embedding
   with jax.named_scope("rope"):
-    q, k = _rms_norm(q, None, cfg.norm_eps), _rms_norm(k, None, cfg.norm_eps)
     q, k = _apply_rotary_embedding(q, sin, cos), _apply_rotary_embedding(k, sin, cos)
 
   with jax.named_scope("cache"):

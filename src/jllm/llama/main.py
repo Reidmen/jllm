@@ -9,15 +9,15 @@ from pathlib import Path
 from jllm.llama.llama3_model import Config, KVCache, Weights, hf_to_Config, PreTrainedTokenizerFast
 from jllm.llama.llama3_model import decode_step, load_pytree, load_tokenizer, prefill
 
-TOKEN_BLOCK = 32
+TOKEN_BLOCK = 32 
 
 
 def encode_input(tokenizer: PreTrainedTokenizerFast, texts: list[str], pad_id: int = 0):
   if not isinstance(texts, list):
     raise TypeError
   inputs = [
-    tokenizer.apply_chat_template(
-    [{"role": "user", "content": text}], tokenize=True, add_generation_prompt=True)
+    tokenizer.apply_chat_template([{"role": "user", "content": text}], add_generation_prompt=True) + \
+    tokenizer.encode("<|start_header_id|>assistant<|end_header_id|>")
     for text in texts
   ]
   
@@ -39,7 +39,7 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   weights = load_pytree(path, Weights.initialize_shardings(cfg))
 
   prompts = [
-    "Tell me a joke.",
+    "Tell me a joke of Canadian culture",
     "Do you like the old english language, why?",
     "Can you give me a simple German phrase.",
   ]
