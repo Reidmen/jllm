@@ -16,14 +16,19 @@ def encode_input(tokenizer: PreTrainedTokenizerFast, texts: list[str], pad_id: i
   if not isinstance(texts, list):
     raise TypeError
   inputs = [
-    tokenizer.apply_chat_template([{"role": "user", "content": text}], add_generation_prompt=True) + \
-    tokenizer.encode("<|start_header_id|>assistant<|end_header_id|>")
+    tokenizer.apply_chat_template([{"role": "user", "content": text}], add_generation_prompt=True)
     for text in texts
   ]
   
   max_len = max([len(x) for x in inputs])
   inputs = [(max_len - len(x)) * [pad_id] + x for x in inputs]
-  return numpy.array(inputs)
+  return numpy.array(inputs, dtype=int)
+
+def test_tokenizer(tokenizer: PreTrainedTokenizerFast):
+  test_prompt = "Hello, this is an example."
+  encoded = tokenizer.apply_chat_template([{"role": "user", "content": test_prompt}], add_generation_prompt=True)
+  decoded = tokenizer.decode(encoded, skip_special_tokens=True)
+  print(f"{test_prompt=}\n{encoded=}\n{decoded=}")
 
 
 def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool, user_text: str | None):
@@ -62,7 +67,7 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
       curr_tokens, cache = decode_step(curr_tokens, weights, cache, cfg)
     tokens = numpy.array(jax.numpy.concatenate(tokens_list, axis=-1))
 
-  responses = [tokenizer.decode(row) for row in tokens]
+  responses = [tokenizer.decode(row, skip_special_tokens=True) for row in tokens]
   print("Llama 3.2 Model Responses:\n")
   for i, response_i in enumerate(responses):
     print(f"[Response] ({i}) {response_i}\n")

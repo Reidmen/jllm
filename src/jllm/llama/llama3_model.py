@@ -145,7 +145,7 @@ def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
     mlp_layer_idxs=_get(hf_config, "lmp_only_layers", []),
     # config
     dtype=jnp.bfloat16,
-    norm_eps=_get(hf_config, "rms_norm_eps"),
+    norm_eps=_get(hf_config, "rms_norm_eps", 1e-6),
     # Llama 3 RoPE 
     rope_theta=_get(hf_config, "rope_theta"),
     rope_scaling_factor=_get(hf_config, "rope_scaling")["factor"],
@@ -445,7 +445,7 @@ def make_attention_mask(
     combined_mask = jnp.logical_and(segment_mask, causal_mask)
     return combined_mask
   else:
-    segment_mask
+    return segment_mask
 
 
 @partial(auto_axes, out_sharding=PartitionSpec(BATCH_AXIS_NAME, ATTN_HEADS_AXIS_NAME, None, None))
@@ -538,7 +538,7 @@ def attention_kernel(
 
 
 def attention_block(
-  x: jax.Array,  # (batch_size, seq_len, model_dim)
+  x: jax.Array,  # (batch_size, seq_len, embed_size)
   segment_ids: jax.Array,
   attn_layer: AttentionLayer,
   idx: int,
@@ -562,7 +562,7 @@ def attention_block(
     if cache is None:
       q_segment_ids, k_segment_ids = segment_ids, segment_ids
       q_offset = jnp.zeros(x.shape[0], dtype=jnp.int32)
-      starts, lenghts = _count_left_padding(k_segment_ids, 0), _length_minus_padding(k_segment_ids)
+      starts, lengths = _count_left_padding(k_segment_ids, 0), _length_minus_padding(k_segment_ids)
     else:
       k = sharded_update_slice_in_dim(cache.k[idx], k, cache.length, axis=cache.sequence_axis)
       v = sharded_update_slice_in_dim(cache.v[idx], v, cache.length, axis=cache.sequence_axis)
@@ -574,10 +574,10 @@ def attention_block(
         (time_indices >= cache.starts[:, None]) & (time_indices < (cache.length + incremental_position))
       ).astype(jnp.int32)
       q_offset = cache.length[None]
-      starts, lenghts = cache.starts, (cache.length + incremental_position)[None]
+      starts, lengths = cache.starts, (cache.length + incremental_position)[None]
 
   with jax.named_scope("attention"):
-    attn_args = (q, k, v, q_segment_ids, k_segment_ids, q_offset, starts, lenghts)
+    attn_args = (q, k, v, q_segment_ids, k_segment_ids, q_offset, starts, lengths)
     if not cfg.use_naive_attn_kernel:
       attn_out = attention_kernel(*attn_args, cfg=cfg)  # TODO test flash attention
     else:
@@ -605,7 +605,7 @@ def mlp_block(x: jax.Array, layer: MLPLayer, cfg: Config) -> jax.Array:
 
 
 def forward_layer(
-  x: jax.Array,  # (batch_size, seq_len, model_dim)
+  x: jax.Array,  # (batch_size, seq_len, embed_size)
   segment_ids: jax.Array,
   layer: Layer,
   idx: int,
