@@ -370,16 +370,17 @@ def _llama_rope_positional_correction(rotational_frequency: jax.Array, cfg: Conf
   highfreq_factor = cfg.rope_scaling_highfreq_factor
   original_context_len = cfg.rope_scaling_original_max_position_embeddings
 
+  # https://github.com/rasbt/LLMs-from-scratch/blob/main/ch05/07_gpt_to_llama/standalone-llama32.ipynb
   lowfreq_wavelen = original_context_len / lowfreq_factor
   highfreq_wavelen = original_context_len / highfreq_factor
   wavelen = 2 * math.pi / rotational_frequency
-  div_freq_llama = jnp.where(wavelen > lowfreq_wavelen, rotational_frequency / factor, rotational_frequency)
+  invfreq_llama = jnp.where(wavelen > lowfreq_wavelen, rotational_frequency / factor, rotational_frequency)
   # interpolate in the opposite of jnp.where
   smooth_factor = (original_context_len / wavelen - lowfreq_factor) / (highfreq_factor - lowfreq_factor)
-  div_smooth_freq = (1 - smooth_factor) * div_freq_llama / factor + smooth_factor * div_freq_llama
-  is_midfreq = ~(wavelen < highfreq_wavelen) * ~(wavelen > lowfreq_wavelen)
-  div_freq_llama = jnp.where(is_midfreq, div_smooth_freq, div_freq_llama)
-  return div_freq_llama
+  smoothed_rotfreq = (1 - smooth_factor) * rotational_frequency/ factor + smooth_factor * rotational_frequency 
+  is_midfreq = ~(wavelen <= highfreq_wavelen) * ~(wavelen >= lowfreq_wavelen)
+  invfreq_llama = jnp.where(is_midfreq, smoothed_rotfreq, invfreq_llama)
+  return invfreq_llama
 
 
 def _generate_positional_embeddings(positions: jax.Array, head_dim: int, cfg: Config) -> tuple[jax.Array, jax.Array]:
