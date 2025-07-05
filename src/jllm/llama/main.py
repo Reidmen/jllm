@@ -1,4 +1,4 @@
-"""Main Llama 3.2 call, requires >= 2 devices (e.g. Colab instance). No quantized."""
+"""Main Llama 3.1 call, requires >= 2 devices (e.g. Colab instance). No quantized."""
 
 import argparse
 import json
@@ -68,7 +68,7 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
     tokens = numpy.array(jax.numpy.concatenate(tokens_list, axis=-1))
 
   responses = [tokenizer.decode(row, skip_special_tokens=True) for row in tokens]
-  print("Llama 3.2 Model Responses:\n")
+  print("Llama 3.1 Model Responses:\n")
   for i, response_i in enumerate(responses):
     print(f"[Response] ({i}) {response_i}\n")
 

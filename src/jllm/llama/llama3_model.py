@@ -316,7 +316,7 @@ class Weights(ShardingBase):
   layers: list[Layer]
   embedding: jax.Array | ArrayInfo
   gamma_final: jax.Array | ArrayInfo
-  # lm_head: jax.Array | ArrayInfo
+  lm_head: jax.Array | ArrayInfo
 
   @classmethod
   def initialize(cls, cfg: Config):
@@ -325,7 +325,7 @@ class Weights(ShardingBase):
       layers=[Layer.initialize(cfg, layer_idx) for layer_idx in range(cfg.num_layers)],
       embedding=ArrayInfo((cfg.vocab_size, cfg.embed_size), cfg.dtype, ("vocab_in", "vocab_in"), _init(0, 1)),
       gamma_final=ArrayInfo((cfg.embed_size,), cfg.dtype, ("act_embed",), jax.nn.initializers.constant(1.0)),
-      # lm_head=ArrayInfo((cfg.embed_size, cfg.vocab_size), cfg.dtype, ("vocab_in", "vocab_out"), _init(0, 1)),
+      lm_head=ArrayInfo((cfg.embed_size, cfg.vocab_size), cfg.dtype, ("vocab_in", "vocab_out"), _init(0, 1)),
     )
 
 
@@ -370,7 +370,6 @@ def _llama_rope_positional_correction(rotational_frequency: jax.Array, cfg: Conf
   highfreq_factor = cfg.rope_scaling_highfreq_factor
   original_context_len = cfg.rope_scaling_original_max_position_embeddings
 
-  # https://github.com/rasbt/LLMs-from-scratch/blob/main/ch05/07_gpt_to_llama/standalone-llama32.ipynb
   lowfreq_wavelen = original_context_len / lowfreq_factor
   highfreq_wavelen = original_context_len / highfreq_factor
   wavelen = 2 * math.pi / rotational_frequency
@@ -378,7 +377,7 @@ def _llama_rope_positional_correction(rotational_frequency: jax.Array, cfg: Conf
   # interpolate in the opposite of jnp.where
   smooth_factor = (original_context_len / wavelen - lowfreq_factor) / (highfreq_factor - lowfreq_factor)
   smoothed_rotfreq = (1 - smooth_factor) * rotational_frequency/ factor + smooth_factor * rotational_frequency 
-  is_midfreq = ~(wavelen <= highfreq_wavelen) * ~(wavelen >= lowfreq_wavelen)
+  is_midfreq = ~(wavelen < highfreq_wavelen) * ~(wavelen > lowfreq_wavelen)
   invfreq_llama = jnp.where(is_midfreq, smoothed_rotfreq, invfreq_llama)
   return invfreq_llama
 
@@ -678,7 +677,8 @@ def forward(
   x = _rms_norm(x, weights.gamma_final, cfg.norm_eps)
   # Project to vocab using embedding layer (only for Llama 3.2 1B & 3B)
   # (batch_size, seq_len, embed_size) x (embed_size, vocab) -> (batch_size, seq_len, vocab)
-  logits = jnp.einsum("btd,vd->btv", x, weights.embedding, out_sharding=PartitionSpec())
+  logits = jnp.einsum("btd,dv->btv", x, weights.lm_head, out_sharding=PartitionSpec())
+
   if cache is not None:
     # sum over valid segments (i.e. non padding tokens)
     # (batch_size, seq_len) -> (batch_size,)

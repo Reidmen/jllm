@@ -51,7 +51,7 @@ _HF_KEY_MAPPING = {
   # MLP norms: renamed with suffix gamma
   r"model\.norm\.weight": "gamma_final",
   # # LM head -> lm_head == embed_tokens for Llama-3.2 1B & 3B
-  # r"lm_head\.weight": "lm_head",
+  r"lm_head\.weight": "lm_head",
 }
 
 
@@ -80,9 +80,9 @@ def convert_weight(key: str, value: torch.Tensor, cfg: Config):
     assert value.shape == (cfg.vocab_size, cfg.embed_size)
     return torch_to_jax(value)
   # lm_head == embed_tokens for LLama 3.2
-  # elif re.search(r"lm_head", key) is not None:
-  #   assert value.shape == (cfg.vocab_size, cfg.embed_size)
-  #   return torch_to_jax(value.T)
+  elif re.search(r"lm_head", key) is not None:
+    assert value.shape == (cfg.vocab_size, cfg.embed_size)
+    return torch_to_jax(value.T)
   elif re.search(r"(q|k)_norm", key) is not None:
     assert value.shape == (cfg.head_dim,)
     return torch_to_jax(value.T)
