@@ -134,7 +134,8 @@ def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
     # Attention
     q_heads=_get(hf_config, "num_attention_heads"),
     kv_heads=_get(hf_config, "num_key_value_heads"),
-    head_dim=_get(hf_config, "head_dim"),
+    # https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/blob/main/config.json
+    head_dim=_get(hf_config, "head_dim", 128), # not present in config
     # Vocab & Seq. length
     vocab_size=_get(hf_config, "vocab_size"),
     max_seq_len=128,
