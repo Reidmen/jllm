@@ -117,9 +117,9 @@ class Config:
   mesh: jax.sharding.Mesh | None = None
   # RoPE - TODO: better default values?
   rope_theta: float = 500000.0
-  rope_scaling_factor: float = 1.0
+  rope_scaling_factor: float = 32.0
   rope_scaling_lowfreq_factor: float = 1.0
-  rope_scaling_highfreq_factor: float = 1.0
+  rope_scaling_highfreq_factor: float = 4.0
   rope_scaling_original_max_position_embeddings: int = 8192
 
 
@@ -470,7 +470,6 @@ def naive_attention_kernel(
   qk = jnp.einsum("bngtd,bned->bngte", q_group, k) * scale
   qk = qk.reshape((batch_size, nq_heads, qseq_len, kseq_len))
 
-  del lengths
   mask = make_attention_mask(qseq_len, kseq_len, q_segment_ids, kv_segment_ids, q_offset, cfg.causal_attn, starts)
   # Apply combined mask
   qk = jnp.where(mask, qk, 1e-30)

@@ -21,8 +21,8 @@ def encode_input(tokenizer: PreTrainedTokenizerFast, texts: list[str], pad_id: i
   ]
   
   max_len = max([len(x) for x in inputs])
-  inputs = [(max_len - len(x)) * [pad_id] + x for x in inputs]
-  return numpy.array(inputs, dtype=int)
+  inputs = [[pad_id] * (max_len - len(x)) + x for x in inputs]
+  return numpy.array(inputs, dtype=numpy.int32)
 
 def test_tokenizer(tokenizer: PreTrainedTokenizerFast):
   test_prompt = "Hello, this is an example."
