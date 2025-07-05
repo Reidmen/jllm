@@ -56,7 +56,7 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   input = encode_input(tokenizer, prompts)
   with jax.sharding.use_mesh(cfg.mesh):
     batch_size, seq_len = input.shape[0], cfg.max_seq_len
-    zero_cache = KVCache.initialize_with_key(jax.random.PRNGKey(0), cfg, batch_size, seq_len)
+    zero_cache = KVCache.initialize_with_key(jax.random.key(0), cfg, batch_size, seq_len)
     next_tokens, _, cache = prefill(input, weights, zero_cache, cfg)
     curr_tokens = next_tokens.at[:, cache.length - 1 : cache.length].get(
       out_sharding=jax.sharding.PartitionSpec(None, None)

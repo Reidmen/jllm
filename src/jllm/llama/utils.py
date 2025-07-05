@@ -119,7 +119,7 @@ def convert_model_weights(
   reference_layer: torch.nn.Module,
   cfg: Config,
   device: jax.Device | None = None,
-  sequential: bool = True,
+  sequential: bool = False,
 ):
   from concurrent.futures import ThreadPoolExecutor
   from tqdm import tqdm
