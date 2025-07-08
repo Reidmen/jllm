@@ -1,7 +1,6 @@
 """Main Llama 3.1 call, requires >= 2 devices (e.g. Colab instance). No quantized."""
 
 import argparse
-import json
 import jax
 import dataclasses
 import numpy
