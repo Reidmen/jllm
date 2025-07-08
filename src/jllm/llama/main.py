@@ -8,7 +8,7 @@ from pathlib import Path
 from jllm.llama.llama3_model import Config, GenConfig, KVCache, Weights, load_config, load_generation_config
 from jllm.llama.llama3_model import decode_step, load_pytree, load_tokenizer, prefill, PreTrainedTokenizerFast
 
-TOKEN_BLOCK = 256 
+TOKEN_BLOCK = 128 
 
 
 def encode_input(tokenizer: PreTrainedTokenizerFast, texts: list[str], pad_id: int = 0):
@@ -44,7 +44,7 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   weights = load_pytree(path, Weights.initialize_shardings(cfg))
 
   prompts = [
-    "Tell me a joke of Canadian culture",
+    "Tell me a nice phrase of humanity",
     "Do you like the old english language, why?",
     "Can you give me a simple German phrase.",
   ]

@@ -38,7 +38,7 @@ From its [release-notes](https://qwenlm.github.io/blog/qwen3/), some model chara
 To run the `Qwen3-4B` model in a Colab instance, simply type:
 ```bash
 !python3 ./jllm/scripts/download_model.py --model-id "Qwen/Qwen3-4B" --dest-path ./hf_models/ 
-!python3 ./jllm/scripts/convert_weights.py --hf_model_path ./hf_models/Qwen--Qwen3-4B --jax_model_path ./jax_models/Qwen--Qwen3-4B
+!python3 ./jllm/scripts/convert_weights.py --hf-model-path ./hf_models/Qwen--Qwen3-4B --jax-model-path ./jax_models/Qwen--Qwen3-4B
 ```
 
 It will download the `Qwen3 4B` model weights from HuggingFace and convert those weights to a `JAX` compatible format (stored in `./jax_models/`).
@@ -59,7 +59,20 @@ Finally, you can run the inference with a default prompt:
 >    ]
 > ```
 
-You can also provide an extra argument `--user_input` with your extra prompt.
+The type of responses you will get will start with the `<think>` token:
+
+```bash
+[Response] (0) <think>
+Okay, the user asked for a nice phrase about humanity. Let me think about what they might be looking for. They could want something uplifting, maybe for a speech, a quote, or just to share. I should focus on positive aspects of humanity....
+
+[Response] (1) <think>
+Okay, the user is asking if I like the old English language and why. First, I need to clarify that I don't have personal feelings, but I can explain the historical and linguistic significance of Old English. Let me start by defining Old English and its time period. It was spoken from around the 5th to the 11th century, so I should mention the Germanic tribes like the Angles, Saxons, and Jutes. 
+
+[Response] (2) <think>
+Okay, the user is asking for an explanation of a phrase connected to German philosophy in German. Let me start by recalling some key German philosophical concepts. Heidegger's "Sein und Zeit" comes to mind, but maybe that's too specific. Alternatively, the phrase "der Mensch ist die Messlatte" (man is the measure) is from Heraclitus, but that's Greek. Wait...
+```
+
+You can also provide an extra argument `--user-input` with your extra prompt.
 It will be appended to the default ones
 
 ```bash
