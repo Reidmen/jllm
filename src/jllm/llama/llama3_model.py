@@ -183,6 +183,8 @@ def load_tokenizer(tokenizer_path: str | Path, tokenizer_config_path: str | Path
 
 def load_generation_config(config_path: str | Path, key: jax.random.PRNGKey) -> GenConfig:
   config = json.loads(Path(config_path).read_text())
+  if "top_k" not in config.keys():
+    config["top_k"] = 20 # reasonable default
   genconfig_keys = ["temperature", "top_p", "top_k"]
   config = {k: v for k, v in config.items() if k in genconfig_keys}
   return GenConfig(**config, key=key)

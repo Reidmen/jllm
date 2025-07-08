@@ -1,11 +1,12 @@
 # JLLM
 This repository contains pieces of code to run `Qwen3` models (`0.6B, 4B, 8B, 14B`). 
 
-The goal is educacional and uses [llm-examples](https://github.com/jax-ml/jax-llm-examples/tree/main) as reference for the `JAX` implementation of `Qwen3` and `Llama` (wip) models; The idea is to have a *simpler* wrapper with instructions to run with Colab resources (v2-8 TPU).
+The goal is educacional and uses [llm-examples](https://github.com/jax-ml/jax-llm-examples/tree/main) as reference for the `JAX` implementation of `Qwen3` and `Llama` models; The idea is to have a *simpler* wrapper with instructions to run in Colab resources (v2-8 TPU).
 
 > [!NOTE] 
-> The implementation here is a *simplified case of [jax-llm-examples](https://github.com/jax-ml/jax-llm-examples/tree/main)* and does NOT have quantization. The variable/function definitions are more verbose.
+> The implementation here is a *differs from [jax-llm-examples](https://github.com/jax-ml/jax-llm-examples/tree/main)* and does NOT have quantization. The variable/function definitions are more verbose, and it includes `top_p` sampling. 
 > All credits **MUST** go to the JAX team.
+
 
 [![Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1NLGltk6abV0OnQ60H2uPmFwYoBfvHqij?usp=sharing)
 [![Kaggle](https://kaggle.com/static/images/open-in-kaggle.svg)](https://www.kaggle.com/code/reidmen/jllm-testing-8b)
@@ -45,7 +46,7 @@ It will download the `Qwen3 4B` model weights from HuggingFace and convert those
 Finally, you can run the inference with a default prompt:
 
 ```bash
-!python3 ./jllm/src/jllm/main.py --weights_path ./jax_models/Qwen--Qwen3-14B
+!python3 ./jllm/src/jllm/qwen/main.py --weights-path ./jax_models/Qwen--Qwen3-14B
 ```
 
 > [!NOTE]
@@ -62,7 +63,7 @@ You can also provide an extra argument `--user_input` with your extra prompt.
 It will be appended to the default ones
 
 ```bash
-!python3 ./jllm/src/jllm/main.py --weights_path ./jax_models/Qwen--Qwen3-14B --user_input "Can you write a simple poem of the Spanish heritage in South America?"
+!python3 ./jllm/src/jllm/qwen/main.py --weights-path ./jax_models/Qwen--Qwen3-14B --user-input "Can you write a simple poem of the Spanish heritage in South America?"
 ```
 
 ## Models programatic architecture
