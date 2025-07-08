@@ -129,6 +129,12 @@ class Config:
   # RoPE
   rope_theta: float = 500000.0
 
+@static_compatible_dataclass
+class GenConfig:
+  temperature: float
+  top_p: float
+  top_k: int
+
 
 def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
   _get = lambda x, k, default=None: (
@@ -176,6 +182,10 @@ def load_tokenizer(tokenizer_path: str | Path, tokenizer_config_path: str | Path
     int(k): AddedToken(**v) for (k, v) in config.get("added_tokens_decoder", dict()).items()
   }
   return PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_path), **config)
+
+def load_generation_config(config_path: str | Path) -> GenConfig:
+  config = json.loads(Path(config_path).read_text())
+  return GenConfig(temperature=config.get("temperature"), top_p=config.get("top_p"), top_k=config.get("top_k", 20))
 
 
 def logical_to_physical(logical: Axes, rules: ShardingRules) -> jax.sharding.PartitionSpec:
@@ -846,6 +856,18 @@ def forward(
   return logits, None
 
 
+def sample_top_p(logits: jax.Array, top_p: float, temperature: float, key: jax.random.PRNGKey):
+  probs = jax.nn.softmax(logits / temperature, axis=-1)
+  probs_sorted, indices = jax.lax.top_k(probs, k=probs.shape[-1])
+  mask = jnp.cumsum(probs_sorted, axis=-1) - probs_sorted > top_p
+  probs_sorted = jnp.where(mask, 0.0, probs_sorted)
+  probs_sorted /= jnp.sum(probs_sorted, axis=-1, keepdims=True)
+
+  next_tokens = jax.random.categorical(key, logits=jnp.log(probs_sorted + 1e-8), axis=-1)[..., None]
+  next_tokens = jnp.take_along_axis(indices, next_tokens, axis=-1)
+  return jnp.squeeze(next_tokens, axis=-1)
+  
+
 @partial(jax.jit, static_argnums=(1, 2))
 def prepare_chunk(chunk, pad_to: int, pad_id: int) -> tuple[jax.Array, jax.Array]:
   # (batch_size, seq_len) -> (batch_size, padded_seq_len)
@@ -862,7 +884,7 @@ def prepare_chunk(chunk, pad_to: int, pad_id: int) -> tuple[jax.Array, jax.Array
 
 
 def prefill(
-  tokens: jax.Array, weights: Weights, cache: KVCache, cfg: Config, pad_id: int = 0
+  tokens: jax.Array, weights: Weights, cache: KVCache, cfg: Config, gencfg: GenConfig, pad_id: int = 0
 ) -> tuple[jax.Array, jax.Array, KVCache]:
   if tokens.shape[-1] > cfg.max_seq_len:
     raise ValueError(f"seq_len {tokens.shape[-1]} larger than max_seq {cfg.max_seq_len}")
@@ -885,11 +907,13 @@ def prefill(
 
 
 @partial(jax.jit, donate_argnames=("cache",))
-def decode_step(current_tokens: jax.Array, weights: Weights, cache: KVCache, cfg: Config):
+def decode_step(current_tokens: jax.Array, weights: Weights, cache: KVCache, cfg: Config, gencfg: GenConfig):
   if current_tokens.ndim != 2:
     raise ValueError(f"ndim {current_tokens.ndim} invalid. Expected 2")
   segment_ids = jnp.ones(current_tokens.shape, dtype=jnp.int32)
   next_logits, cache = forward(current_tokens, segment_ids, weights, cache, cfg)
-  next_tokens = jnp.argmax(next_logits, axis=-1)
+  # next_tokens = jnp.argmax(next_logits, axis=-1)
+  key = jax.random.key(0)
+  next_tokens = sample_top_p(next_logits, gencfg.top_p, gencfg.temperature, key)
   next_tokens = reshard(next_tokens, PartitionSpec())  # shard to all devices
   return next_tokens, cache

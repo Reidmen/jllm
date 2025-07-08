@@ -43,14 +43,13 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   cfg = dataclasses.replace(cfg, mesh=mesh, use_naive_attn_kernel=False if bool(use_flash_attention) else True)
   weights = load_pytree(path, Weights.initialize_shardings(cfg))
 
-  preffix_prompt = "Provide an answer to this: "
   prompts = [
-    preffix_prompt + "Tell me a joke of Canadian culture",
-    preffix_prompt + "Do you like the old english language, why?",
-    preffix_prompt + "Can you give me a simple German phrase.",
+    "Tell me a joke of Canadian culture",
+    "Do you like the old english language, why?",
+    "Can you give me a simple German phrase.",
   ]
   if isinstance(user_text, str):
-    prompts.append(f"{preffix_prompt} {user_text}")
+    prompts.append(f"Provide an answer to this: {user_text}")
 
   for i, prompt_i in enumerate(prompts):
     print(f"[Prompt] ({i}) {prompt_i}\n")

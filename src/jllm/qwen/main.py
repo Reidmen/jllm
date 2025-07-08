@@ -6,8 +6,8 @@ import jax
 import dataclasses
 import numpy
 from pathlib import Path
-from jllm.qwen.qwen3_model import  Config, KVCache, Weights, hf_to_Config
-from jllm.qwen.qwen3_model import  decode_step, load_pytree, load_tokenizer, prefill,PreTrainedTokenizer
+from jllm.qwen.qwen3_model import  Config, GenConfig, KVCache, Weights, hf_to_Config, load_generation_config
+from jllm.qwen.qwen3_model import  decode_step, load_pytree, load_tokenizer, prefill, PreTrainedTokenizer
 
 TOKEN_BLOCK = 128
 
@@ -26,6 +26,7 @@ def encode_input(tokenizer: PreTrainedTokenizer, texts: list[str], pad_id: int =
 def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool, user_text: str | None):
   path = Path(path)
   tokenizer = load_tokenizer(path / "tokenizer.json", path / "tokenizer_config.json")
+  gencfg: GenConfig = load_generation_config(path / "generation_config.json")
   if bool(is_test):
     jax.config.update("jax_num_cpu_devices", 2)
   axes_type = (jax.sharding.AxisType.Explicit,) * 2  # x, y
@@ -42,31 +43,34 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   ]
   if isinstance(user_text, str):
     prompts.append(f"Provide an answer to this: {user_text}")
+  for i, prompt_i in enumerate(prompts):
+    print(f"[Prompt] ({i}) {prompt_i}\n")
 
   input = encode_input(tokenizer, prompts)
   with jax.sharding.use_mesh(cfg.mesh):
     batch_size, seq_len = input.shape[0], cfg.max_seq_len
     zero_cache = KVCache.initialize_with_key(jax.random.PRNGKey(0), cfg, batch_size, seq_len)
-    next_tokens, _logits, cache = prefill(input, weights, zero_cache, cfg)
+    next_tokens, _, cache = prefill(input, weights, zero_cache, cfg, gencfg)
     curr_tokens = next_tokens.at[:, cache.length - 1 : cache.length].get(
       out_sharding=jax.sharding.PartitionSpec(None, None)
     )
     tokens_list = []
     for _ in range(TOKEN_BLOCK):
       tokens_list.append(curr_tokens)
-      curr_tokens, cache = decode_step(curr_tokens, weights, cache, cfg)
+      curr_tokens, cache = decode_step(curr_tokens, weights, cache, cfg, gencfg)
     tokens = numpy.array(jax.numpy.concatenate(tokens_list, axis=-1))
 
   responses = [tokenizer.decode(row) for row in tokens]
   print(f"Qwen reponses:\n {responses}")
-
+  for i, response_i in enumerate(responses):
+    print(f"[Response] ({i}) {response_i}\n")
 
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
-  parser.add_argument("--weights_path", required=True, help=f"HuggingFace path to weights")
-  parser.add_argument("--test_cpu", required=False, default=False, help="Test flag to execute on CPU-only")
-  parser.add_argument("--flash_attention", required=False, default=False, help="Use Flash-Attention (TPU-only)")
-  parser.add_argument("--user_input", required=False, default=None, help="A user input (string)")
+  parser.add_argument("--weights-path", required=True, help=f"HuggingFace path to weights")
+  parser.add_argument("--test-cpu", required=False, default=False, help="Test flag to execute on CPU-only")
+  parser.add_argument("--flash-attention", required=False, default=False, help="Use Flash-Attention (TPU-only)")
+  parser.add_argument("--user-input", required=False, default=None, help="A user input (string)")
   args = parser.parse_args()
   # with jax.profiler.trace("./tmp/jllm_main_profile"):
   #   main(args.weights_path, args.test_cpu, args.flash_attention)
