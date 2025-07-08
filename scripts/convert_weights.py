@@ -56,13 +56,13 @@ def main(model_path: str | Path, chkpt_path: str | Path):
 if __name__ == "__main__":
   parser = argparse.ArgumentParser()
   parser.add_argument(
-    "--hf_model_path",
+    "--hf-model-path",
     required=False,
     default="./hf_models/Qwen--Qwen3-0.6B",
     help="HuggingFace model path e.g. ./hf_models/Qwen--Qwen3-0.6B",
   )
   parser.add_argument(
-    "--jax_model_path",
+    "--jax-model-path",
     required=False,
     default="./jax_models/Qwen--Qwen3-0.6B",
     help="Destination path for jax-compatible model",
