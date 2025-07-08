@@ -8,7 +8,7 @@ from pathlib import Path
 from jllm.llama.llama3_model import Config, GenConfig, KVCache, Weights, load_config, load_generation_config
 from jllm.llama.llama3_model import decode_step, load_pytree, load_tokenizer, prefill, PreTrainedTokenizerFast
 
-TOKEN_BLOCK = 128 
+TOKEN_BLOCK = 512 
 
 
 def encode_input(tokenizer: PreTrainedTokenizerFast, texts: list[str], pad_id: int = 0):
