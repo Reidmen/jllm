@@ -18,7 +18,7 @@ def main(model_path: str | Path, chkpt_path: str | Path):
 
   # TODO: Quantized version
   if "llama" in config.model_type.lower():
-    from jllm.llama.llama3_model import Weights, hf_to_Config, save_pytree
+    from jllm.llama.llama3_model import Weights, hf_to_config, save_pytree
     from jllm.llama.utils import convert_model_weights
 
     cfg = hf_to_config(config)
@@ -42,7 +42,7 @@ def main(model_path: str | Path, chkpt_path: str | Path):
     compatible_weights = convert_model_weights(weights, model, cfg)
     save_pytree(compatible_weights, chkpt_path)
 
-  additional_files = ["config.json", "tokenizer.json", "tokenizer_config.json"]
+  additional_files = ["config.json", "tokenizer.json", "tokenizer_config.json", "generation_config.json"]
   for additional_file in additional_files:
     full_paths = list(model_path.glob(f"**/{additional_file}"))
     if len(full_paths) != 1:

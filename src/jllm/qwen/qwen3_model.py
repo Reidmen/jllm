@@ -859,16 +859,16 @@ def forward(
   return logits, None
 
 
-def sample_top_p(logits: jax.Array, top_p: float, temperature: float, key: jax.random.PRNGKey):
-  # TODO include top_k case
+def top_k_top_p_sampling(logits: jax.Array, gencfg: GenConfig):
   # https://gist.github.com/bsantraigi/5752667525d88d375207f099bd78818b
-  probs = jax.nn.softmax(logits / temperature, axis=-1)
-  probs_sorted, indices = jax.lax.top_k(probs, k=probs.shape[-1])
-  mask = jnp.cumsum(probs_sorted, axis=-1) - probs_sorted > top_p
+  probs = jax.nn.softmax(logits / gencfg.temperature, axis=-1)
+  top_k = min(logits.shape[-1], gencfg.top_k) # satefy check
+  probs_sorted, indices = jax.lax.top_k(probs, k=top_k)
+  mask = jnp.cumsum(probs_sorted, axis=-1) - probs_sorted > gencfg.top_p
   probs_sorted = jnp.where(mask, 0.0, probs_sorted)
   probs_sorted /= jnp.sum(probs_sorted, axis=-1, keepdims=True)
 
-  next_tokens = jax.random.categorical(key, logits=jnp.log(probs_sorted + 1e-8), axis=-1)[..., None]
+  next_tokens = jax.random.categorical(gencfg.key, logits=jnp.log(probs_sorted + 1e-8), axis=-1)[..., None]
   next_tokens = jnp.take_along_axis(indices, next_tokens, axis=-1)
   return jnp.squeeze(next_tokens, axis=-1)
   
@@ -918,6 +918,6 @@ def decode_step(current_tokens: jax.Array, weights: Weights, cache: KVCache, cfg
   segment_ids = jnp.ones(current_tokens.shape, dtype=jnp.int32)
   next_logits, cache = forward(current_tokens, segment_ids, weights, cache, cfg)
   # next_tokens = jnp.argmax(next_logits, axis=-1) # greedy sampling 
-  next_tokens = sample_top_p(next_logits, gencfg.top_p, gencfg.temperature, gencfg.key)
+  next_tokens = top_k_top_p_sampling(next_logits, gencfg)
   next_tokens = reshard(next_tokens, PartitionSpec())  # shard to all devices
   return next_tokens, cache

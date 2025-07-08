@@ -6,8 +6,8 @@ import jax
 import dataclasses
 import numpy
 from pathlib import Path
-from jllm.llama.llama3_model import Config, KVCache, Weights, hf_to_Config, PreTrainedTokenizerFast
-from jllm.llama.llama3_model import decode_step, load_pytree, load_tokenizer, prefill
+from jllm.llama.llama3_model import Config, GenConfig, KVCache, Weights, load_config, load_generation_config
+from jllm.llama.llama3_model import decode_step, load_pytree, load_tokenizer, prefill, PreTrainedTokenizerFast
 
 TOKEN_BLOCK = 32 
 
@@ -39,7 +39,8 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   axes_type = (jax.sharding.AxisType.Explicit,) * 2  # x, y
   # TODO topology (1, 4, jax.device_count() // 4)  with (x, y, z)
   mesh = jax.make_mesh((1, jax.device_count()), ("x", "y"), devices=jax.devices(), axis_types=axes_type)
-  cfg: Config = hf_to_Config(json.loads((path / "config.json").read_text()))
+  cfg: Config = load_config(path / "config.json") 
+  gencfg: GenConfig = load_generation_config(path / "generation_config.json", jax.random.key(0))
   cfg = dataclasses.replace(cfg, mesh=mesh, use_naive_attn_kernel=False if bool(use_flash_attention) else True)
   weights = load_pytree(path, Weights.initialize_shardings(cfg))
 
@@ -64,7 +65,7 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
     tokens_list = []
     for _ in range(TOKEN_BLOCK):
       tokens_list.append(curr_tokens)
-      curr_tokens, cache = decode_step(curr_tokens, weights, cache, cfg)
+      curr_tokens, cache = decode_step(curr_tokens, weights, cache, cfg, gencfg)
     tokens = numpy.array(jax.numpy.concatenate(tokens_list, axis=-1))
 
   responses = [tokenizer.decode(row, skip_special_tokens=True) for row in tokens]
