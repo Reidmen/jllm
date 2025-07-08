@@ -134,9 +134,10 @@ class GenConfig:
   temperature: float
   top_p: float
   top_k: int
+  key: jax.random.PRNGKey
 
 
-def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
+def hf_to_config(hf_config: Any | dict[str, Any]) -> Config:
   _get = lambda x, k, default=None: (
     getattr(x, k, default) if not isinstance(hf_config, dict) else hf_config.get(k, default)
   )
@@ -167,7 +168,7 @@ def hf_to_Config(hf_config: Any | dict[str, Any]) -> Config:
 
 
 def load_config(config_path: str | Path) -> Config:
-  return hf_to_Config(json.loads(Path(config_path).read_text()))
+  return hf_to_config(json.loads(Path(config_path).read_text()))
 
 
 PreTrainedTokenizer = TypeVar("PreTrainedTokenizer")
@@ -183,9 +184,11 @@ def load_tokenizer(tokenizer_path: str | Path, tokenizer_config_path: str | Path
   }
   return PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_path), **config)
 
-def load_generation_config(config_path: str | Path) -> GenConfig:
+def load_generation_config(config_path: str | Path, key: jax.random.PRNGKey) -> GenConfig:
   config = json.loads(Path(config_path).read_text())
-  return GenConfig(temperature=config.get("temperature"), top_p=config.get("top_p"), top_k=config.get("top_k", 20))
+  genconfig_keys = ["temperature", "top_p", "top_k"]
+  config = {k: v for k, v in config.items() if k in genconfig_keys}
+  return GenConfig(**config, key=key)
 
 
 def logical_to_physical(logical: Axes, rules: ShardingRules) -> jax.sharding.PartitionSpec:
@@ -857,6 +860,8 @@ def forward(
 
 
 def sample_top_p(logits: jax.Array, top_p: float, temperature: float, key: jax.random.PRNGKey):
+  # TODO include top_k case
+  # https://gist.github.com/bsantraigi/5752667525d88d375207f099bd78818b
   probs = jax.nn.softmax(logits / temperature, axis=-1)
   probs_sorted, indices = jax.lax.top_k(probs, k=probs.shape[-1])
   mask = jnp.cumsum(probs_sorted, axis=-1) - probs_sorted > top_p
@@ -912,8 +917,7 @@ def decode_step(current_tokens: jax.Array, weights: Weights, cache: KVCache, cfg
     raise ValueError(f"ndim {current_tokens.ndim} invalid. Expected 2")
   segment_ids = jnp.ones(current_tokens.shape, dtype=jnp.int32)
   next_logits, cache = forward(current_tokens, segment_ids, weights, cache, cfg)
-  # next_tokens = jnp.argmax(next_logits, axis=-1)
-  key = jax.random.key(0)
-  next_tokens = sample_top_p(next_logits, gencfg.top_p, gencfg.temperature, key)
+  # next_tokens = jnp.argmax(next_logits, axis=-1) # greedy sampling 
+  next_tokens = sample_top_p(next_logits, gencfg.top_p, gencfg.temperature, gencfg.key)
   next_tokens = reshard(next_tokens, PartitionSpec())  # shard to all devices
   return next_tokens, cache

@@ -6,10 +6,10 @@ import jax
 import dataclasses
 import numpy
 from pathlib import Path
-from jllm.qwen.qwen3_model import  Config, GenConfig, KVCache, Weights, hf_to_Config, load_generation_config
+from jllm.qwen.qwen3_model import  Config, GenConfig, KVCache, Weights, load_config, load_generation_config
 from jllm.qwen.qwen3_model import  decode_step, load_pytree, load_tokenizer, prefill, PreTrainedTokenizer
 
-TOKEN_BLOCK = 128
+TOKEN_BLOCK = 32 
 
 
 def encode_input(tokenizer: PreTrainedTokenizer, texts: list[str], pad_id: int = 0):
@@ -26,13 +26,13 @@ def encode_input(tokenizer: PreTrainedTokenizer, texts: list[str], pad_id: int =
 def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool, user_text: str | None):
   path = Path(path)
   tokenizer = load_tokenizer(path / "tokenizer.json", path / "tokenizer_config.json")
-  gencfg: GenConfig = load_generation_config(path / "generation_config.json")
   if bool(is_test):
     jax.config.update("jax_num_cpu_devices", 2)
   axes_type = (jax.sharding.AxisType.Explicit,) * 2  # x, y
   # TODO topology (1, 4, jax.device_count() // 4)  with (x, y, z)
   mesh = jax.make_mesh((1, jax.device_count()), ("x", "y"), devices=jax.devices(), axis_types=axes_type)
-  cfg: Config = hf_to_Config(json.loads((path / "config.json").read_text()))
+  cfg: Config = load_config(path / "config.json")
+  gencfg: GenConfig = load_generation_config(path / "generation_config.json", jax.random.PRNGKey(0))
   cfg = dataclasses.replace(cfg, mesh=mesh, use_naive_attn_kernel=False if bool(use_flash_attention) else True)
   weights = load_pytree(path, Weights.initialize_shardings(cfg))
 
