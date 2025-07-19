@@ -1,6 +1,6 @@
 # Implementation is based on
 #  https://github.com/jax-ml/jax-llm-examples/blob/main/qwen3/qwen3_jax/model.py
-# Any change is designed for clarity purposes, primarily name convention.
+# Any change is designed for clarity purposes and personal preferences.
 # Tested with jax == 0.6.1 and transformers 4.52.4
 
 """Minimal definitions"""
@@ -17,8 +17,8 @@ import dataclasses
 from jax import tree_util
 from jax.sharding import PartitionSpec
 from jax.experimental.shard import auto_axes, reshard
-from jax.experimental.pallas.ops.tpu.splash_attention import splash_attention_kernel, splash_attention_mask
 
+from .flash import attention_kernel as flash_attention_kernel
 from typing import Any, Callable, TypeVar
 
 OCDBT_TARGET_SIZE = 1024 * 1024 * 1024
@@ -129,6 +129,7 @@ class Config:
   # RoPE
   rope_theta: float = 500000.0
 
+
 @static_compatible_dataclass
 class GenConfig:
   temperature: float
@@ -183,6 +184,7 @@ def load_tokenizer(tokenizer_path: str | Path, tokenizer_config_path: str | Path
     int(k): AddedToken(**v) for (k, v) in config.get("added_tokens_decoder", dict()).items()
   }
   return PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_path), **config)
+
 
 def load_generation_config(config_path: str | Path, key: jax.random.PRNGKey) -> GenConfig:
   config = json.loads(Path(config_path).read_text())
@@ -518,63 +520,6 @@ def naive_attention_kernel(
   return qkv.reshape((batch_size, nq_heads, qseq_len, head_dim))
 
 
-def attention_kernel(
-  q: jax.Array,  # (batch_size, qnum_heads, qseq_len, head_dim)
-  k: jax.Array,  # (batch_size, knum_heads, kseq_len, head_dim)
-  v: jax.Array,  # (batch_size, knum_heads, kseq_len, head_dim)
-  q_segment_ids: jax.Array,
-  kv_segment_ids: jax.Array,
-  q_offset: jax.Array,
-  starts: jax.Array,
-  lengths: jax.Array,
-  cfg: Config,
-):
-  """Flash (GQ)-Attention kernel."""
-  if q.shape[-3] % k.shape[-3] != 0:  # Required for GQA
-    raise Exception
-  l2p = lambda *specs: logical_to_physical(specs, cfg.rules)
-  scale = q.shape[-1] ** (-0.5)  # head_dim ** (-1/2)
-  kv_repeats = q.shape[-3] // k.shape[-3]  # q_num_heads // k_num_heads
-  q_spec = PartitionSpec(
-    *(l2p("batch", "kv_heads") + tuple(set(*l2p("q_heads")) - set(*l2p("kv_heads"))) + l2p("sequence", "head_dim"))
-  )
-  q_shape = q.shape  # shape before reshaping for GQA
-  q = jax.lax.reshape(q, (q.shape[:-3] + (k.shape[-3], kv_repeats, q.shape[-2], q.shape[-1])), out_sharding=q_spec)
-  # Sharding map
-  in_specs = (
-    q_spec,
-    l2p("batch", "kv_heads", "sequence", "head_dim"),
-    l2p("batch", "kv_heads", "sequence", "head_dim"),
-    l2p("batch", "sequence"),
-    l2p("batch", "sequence"),
-    l2p("batch"),
-    l2p("batch"),
-  )
-  out_specs = q_spec
-
-  @partial(shard_map, mesh=cfg.mesh, in_specs=in_specs, out_specs=out_specs, check_rep=False)
-  def _forward(q, k, v, q_segment_ids, kv_segment_ids, starts, lengths):
-    # q: (batch_size, kv_heads, q_heads // kv_heads, seq_len, head_dim)
-    # k, v: (batch_size, kv_heads, seq_len, head_dim)
-    if q.shape[-2] == 1:
-      raise Exception  # decoder kernel not implemented
-    mask = splash_attention_mask.MultiHeadMask(
-      [splash_attention_mask.CausalMask((q.shape[-2], k.shape[-2])) for _ in range(q.shape[-3])]
-    )
-    block_q, block_kv = min(q.shape[-2], 512), min(k.shape[-2], 1024)
-    block_sizes = splash_attention_kernel.BlockSizes(block_q=block_q, block_kv=block_kv, block_kv_compute=block_kv)
-    attn_fn = splash_attention_kernel.make_splash_mha_single_device(mask=mask, block_sizes=block_sizes, is_mqa=True)
-    attn_fn = jax.vmap(jax.vmap(attn_fn, in_axes=(0, 0, 0, None)), in_axes=(0, 0, 0, 0))
-    segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
-    attn_ret = attn_fn(q * scale, k, v, segment_ids)
-
-    return attn_ret.reshape(q.shape)
-
-  lengths = jnp.broadcast_to(lengths, starts.shape)
-  attn_out = _forward(q, k, v, q_segment_ids, kv_segment_ids, starts, lengths).astype(jnp.bfloat16)
-  return jax.lax.reshape(attn_out, q_shape, out_sharding=l2p("batch", "q_heads", "sequence", "head_dim"))
-
-
 def attention_block(
   x: jax.Array,  # (batch_size, seq_len, model_dim)
   segment_ids: jax.Array,
@@ -605,7 +550,7 @@ def attention_block(
     else:
       k = sharded_update_slice_in_dim(cache.k[idx], k, cache.length, axis=cache.sequence_axis)
       v = sharded_update_slice_in_dim(cache.v[idx], v, cache.length, axis=cache.sequence_axis)
-      time_indices = jnp.arange(0, v.shape[cache.sequence_axis])[None, :]  # (None, seq_len)
+      time_indices = jnp.arange(0, v.shape[cache.sequence_axis])[None, :]  # (None, max_seq_len)
 
       q_segment_ids = jnp.where(segment_ids != 0, 1, 0)
       incremental_position = jnp.max(_length_minus_padding(segment_ids))
@@ -618,7 +563,7 @@ def attention_block(
   with jax.named_scope("attention"):
     attn_args = (q, k, v, q_segment_ids, k_segment_ids, q_offset, starts, lenghts)
     if not cfg.use_naive_attn_kernel:
-      attn_out = attention_kernel(*attn_args, cfg=cfg)  # TODO test flash attention
+      attn_out = flash_attention_kernel(*attn_args, cfg=cfg)  # TODO test flash attention
     else:
       attn_out = naive_attention_kernel(*attn_args, cfg=cfg)
 
@@ -862,7 +807,7 @@ def forward(
 def top_k_top_p_sampling(logits: jax.Array, gencfg: GenConfig):
   # https://gist.github.com/bsantraigi/5752667525d88d375207f099bd78818b
   probs = jax.nn.softmax(logits / gencfg.temperature, axis=-1)
-  top_k = min(logits.shape[-1], gencfg.top_k) # satefy check
+  top_k = min(logits.shape[-1], gencfg.top_k)  # satefy check
   probs_sorted, indices = jax.lax.top_k(probs, k=top_k)
   mask = jnp.cumsum(probs_sorted, axis=-1) - probs_sorted > gencfg.top_p
   probs_sorted = jnp.where(mask, 0.0, probs_sorted)
@@ -871,7 +816,7 @@ def top_k_top_p_sampling(logits: jax.Array, gencfg: GenConfig):
   next_tokens = jax.random.categorical(gencfg.key, logits=jnp.log(probs_sorted + 1e-8), axis=-1)[..., None]
   next_tokens = jnp.take_along_axis(indices, next_tokens, axis=-1)
   return jnp.squeeze(next_tokens, axis=-1)
-  
+
 
 @partial(jax.jit, static_argnums=(1, 2))
 def prepare_chunk(chunk, pad_to: int, pad_id: int) -> tuple[jax.Array, jax.Array]:
@@ -917,7 +862,7 @@ def decode_step(current_tokens: jax.Array, weights: Weights, cache: KVCache, cfg
     raise ValueError(f"ndim {current_tokens.ndim} invalid. Expected 2")
   segment_ids = jnp.ones(current_tokens.shape, dtype=jnp.int32)
   next_logits, cache = forward(current_tokens, segment_ids, weights, cache, cfg)
-  # next_tokens = jnp.argmax(next_logits, axis=-1) # greedy sampling 
+  # next_tokens = jnp.argmax(next_logits, axis=-1) # greedy sampling
   next_tokens = top_k_top_p_sampling(next_logits, gencfg)
   next_tokens = reshard(next_tokens, PartitionSpec())  # shard to all devices
   return next_tokens, cache

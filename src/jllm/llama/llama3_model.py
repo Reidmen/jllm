@@ -122,6 +122,7 @@ class Config:
   rope_scaling_highfreq_factor: float = 4.0
   rope_scaling_original_max_position_embeddings: int = 8192
 
+
 @static_compatible_dataclass
 class GenConfig:
   temperature: float
@@ -142,7 +143,7 @@ def hf_to_config(hf_config: Any | dict[str, Any]) -> Config:
     q_heads=_get(hf_config, "num_attention_heads"),
     kv_heads=_get(hf_config, "num_key_value_heads"),
     # https://huggingface.co/meta-llama/Llama-3.1-8B-Instruct/blob/main/config.json
-    head_dim=_get(hf_config, "head_dim", 128), # not present in config
+    head_dim=_get(hf_config, "head_dim", 128),  # not present in config
     # Vocab & Seq. length
     vocab_size=_get(hf_config, "vocab_size"),
     max_seq_len=128,
@@ -154,14 +155,12 @@ def hf_to_config(hf_config: Any | dict[str, Any]) -> Config:
     # config
     dtype=jnp.bfloat16,
     norm_eps=_get(hf_config, "rms_norm_eps", 1e-6),
-    # Llama 3 RoPE 
+    # Llama 3 RoPE
     rope_theta=_get(hf_config, "rope_theta"),
     rope_scaling_factor=_get(hf_config, "rope_scaling")["factor"],
     rope_scaling_lowfreq_factor=_get(hf_config, "rope_scaling")["low_freq_factor"],
     rope_scaling_highfreq_factor=_get(hf_config, "rope_scaling")["high_freq_factor"],
-    rope_scaling_original_max_position_embeddings=_get(hf_config, "rope_scaling")[
-      "original_max_position_embeddings"
-    ]
+    rope_scaling_original_max_position_embeddings=_get(hf_config, "rope_scaling")["original_max_position_embeddings"],
   )
 
 
@@ -170,6 +169,7 @@ def load_config(config_path: str | Path) -> Config:
 
 
 PreTrainedTokenizerFast = TypeVar("PreTrainedTokenizerFast")
+
 
 def load_tokenizer(tokenizer_path: str | Path, tokenizer_config_path: str | Path) -> PreTrainedTokenizerFast:
   from transformers import PreTrainedTokenizerFast, AddedToken
@@ -181,13 +181,15 @@ def load_tokenizer(tokenizer_path: str | Path, tokenizer_config_path: str | Path
   }
   return PreTrainedTokenizerFast(tokenizer_file=str(tokenizer_path), **config)
 
+
 def load_generation_config(config_path: str | Path, key: jax.random.PRNGKey) -> GenConfig:
   config = json.loads(Path(config_path).read_text())
   if "top_k" not in config.keys():
-    config["top_k"] = 20 # reasonable default
+    config["top_k"] = 20  # reasonable default
   genconfig_keys = ["temperature", "top_p", "top_k"]
   config = {k: v for k, v in config.items() if k in genconfig_keys}
   return GenConfig(**config, key=key)
+
 
 def logical_to_physical(logical: Axes, rules: ShardingRules) -> jax.sharding.PartitionSpec:
   """Map from logical axes to physical mesh axes"""
@@ -379,6 +381,7 @@ def _rms_norm(x: jax.Array, gamma: jax.Array | None, eps: jax.Array | float) -> 
   rms = jnp.sqrt(jnp.mean(jnp.astype(x, jnp.float32) ** 2, axis=-1, keepdims=True) + eps)
   return jnp.astype((gamma if gamma is not None else 1) * x / rms, jnp.bfloat16)
 
+
 def _llama_rope_positional_correction(rotational_frequency: jax.Array, cfg: Config) -> jax.Array:
   factor = cfg.rope_scaling_factor
   lowfreq_factor = cfg.rope_scaling_lowfreq_factor
@@ -391,7 +394,7 @@ def _llama_rope_positional_correction(rotational_frequency: jax.Array, cfg: Conf
   invfreq_llama = jnp.where(wavelen > lowfreq_wavelen, rotational_frequency / factor, rotational_frequency)
   # interpolate in the opposite of jnp.where
   smooth_factor = (original_context_len / wavelen - lowfreq_factor) / (highfreq_factor - lowfreq_factor)
-  smoothed_rotfreq = (1 - smooth_factor) * rotational_frequency/ factor + smooth_factor * rotational_frequency 
+  smoothed_rotfreq = (1 - smooth_factor) * rotational_frequency / factor + smooth_factor * rotational_frequency
   is_midfreq = ~(wavelen < highfreq_wavelen) * ~(wavelen > lowfreq_wavelen)
   invfreq_llama = jnp.where(is_midfreq, smoothed_rotfreq, invfreq_llama)
   return invfreq_llama
@@ -702,9 +705,10 @@ def forward(
 
   return logits, None
 
+
 def top_k_top_p_sampling(logits: jax.Array, gencfg: GenConfig):
   probs = jax.nn.softmax(logits / gencfg.temperature, axis=-1)
-  top_k = min(logits.shape[-1], gencfg.top_k) # satefy check
+  top_k = min(logits.shape[-1], gencfg.top_k)  # satefy check
   probs_sorted, indices = jax.lax.top_k(probs, k=top_k)
   mask = jnp.cumsum(probs_sorted, axis=-1) - probs_sorted > gencfg.top_p
   probs_sorted = jnp.where(mask, 0.0, probs_sorted)
@@ -713,7 +717,7 @@ def top_k_top_p_sampling(logits: jax.Array, gencfg: GenConfig):
   next_tokens = jax.random.categorical(gencfg.key, logits=jnp.log(probs_sorted + 1e-8), axis=-1)[..., None]
   next_tokens = jnp.take_along_axis(indices, next_tokens, axis=-1)
   return jnp.squeeze(next_tokens, axis=-1)
-  
+
 
 @partial(jax.jit, static_argnums=(1, 2))
 def prepare_chunk(chunk, pad_to: int, pad_id: int) -> tuple[jax.Array, jax.Array]:

@@ -8,20 +8,20 @@ from pathlib import Path
 from jllm.llama.llama3_model import Config, GenConfig, KVCache, Weights, load_config, load_generation_config
 from jllm.llama.llama3_model import decode_step, load_pytree, load_tokenizer, prefill, PreTrainedTokenizerFast
 
-TOKEN_BLOCK = 128 
+TOKEN_BLOCK = 128
 
 
 def encode_input(tokenizer: PreTrainedTokenizerFast, texts: list[str], pad_id: int = 0):
   if not isinstance(texts, list):
     raise TypeError
   inputs = [
-    tokenizer.apply_chat_template([{"role": "user", "content": text}], add_generation_prompt=True)
-    for text in texts
+    tokenizer.apply_chat_template([{"role": "user", "content": text}], add_generation_prompt=True) for text in texts
   ]
-  
+
   max_len = max([len(x) for x in inputs])
   inputs = [[pad_id] * (max_len - len(x)) + x for x in inputs]
   return numpy.array(inputs, dtype=numpy.int32)
+
 
 def test_tokenizer(tokenizer: PreTrainedTokenizerFast):
   test_prompt = "Hello, this is an example."
@@ -38,7 +38,7 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   axes_type = (jax.sharding.AxisType.Explicit,) * 2  # x, y
   # TODO topology (1, 4, jax.device_count() // 4)  with (x, y, z)
   mesh = jax.make_mesh((1, jax.device_count()), ("x", "y"), devices=jax.devices(), axis_types=axes_type)
-  cfg: Config = load_config(path / "config.json") 
+  cfg: Config = load_config(path / "config.json")
   gencfg: GenConfig = load_generation_config(path / "generation_config.json", jax.random.key(0))
   cfg = dataclasses.replace(cfg, mesh=mesh, use_naive_attn_kernel=False if bool(use_flash_attention) else True)
   weights = load_pytree(path, Weights.initialize_shardings(cfg))
