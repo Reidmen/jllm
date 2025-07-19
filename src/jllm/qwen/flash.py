@@ -178,7 +178,7 @@ def ragged_attention_fwd(
   block_bs: int = 4,
   block_kv: int = 256,
   scale: int | None = None,
-  interpret: bool = True,
+  interpret: bool = False,
 ):
   scale = math.sqrt(q.shape[-1]) if scale is None else scale
   bs_q, q_heads, head_dim_q = q.shape
@@ -249,3 +249,13 @@ def ragged_attention_fwd(
     starts, lengths, chunked_starts, chunked_lengths, q, k, v, qk_prev
   )
   return attn
+
+
+def test_ragged_attention(interpret: bool = False):
+  "https://github.com/jax-ml/jax-llm-examples/blob/main/qwen3/qwen3_jax/ragged_attention.py"
+  raise NotImplementedError
+  bs, q_heads, kv_heads, kv_seq_len, head_dim = 64, 8, 4, 1024, 128
+  print("Testing ragged flash attention")
+  dtype = jnp.bfloat16
+  mesh = jax.make_mesh((jax.devices(),), ("x"))
+
