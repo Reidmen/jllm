@@ -59,7 +59,7 @@ def attention_kernel(
     # q: (batch_size, kv_heads, q_heads // kv_heads, seq_len, head_dim)
     # k, v: (batch_size, kv_heads, seq_len, head_dim)
     if q.shape[-2] == 1:
-      print(f"Decode kernel, {q.shape=}, seq_len {q.shape[-1]}")
+      # print(f"Decode kernel, {q.shape=}, seq_len {q.shape[-1]}")
       in_axis = (1, 1, 1, None, None)  # for block_kv, block_bs?
       params = dict(scale=scale, block_kv=128, block_bs=32)
       q = q[..., 0, :]
@@ -178,7 +178,7 @@ def ragged_attention_fwd(
   block_bs: int = 4,
   block_kv: int = 256,
   scale: int | None = None,
-  interpret: bool = False,
+  interpret: bool = True,
 ):
   scale = math.sqrt(q.shape[-1]) if scale is None else scale
   bs_q, q_heads, head_dim_q = q.shape
