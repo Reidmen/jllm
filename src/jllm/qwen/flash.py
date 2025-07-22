@@ -61,7 +61,7 @@ def attention_kernel(
     if q.shape[-2] == 1:
       # print(f"Decode kernel, {q.shape=}, seq_len {q.shape[-1]}")
       in_axis = (1, 1, 1, None, None)  # for block_kv, block_bs?
-      params = dict(scale=scale, block_kv=128, block_bs=32, interpret=True)
+      params = dict(scale=scale, block_kv=128, block_bs=32, interpret=False)
       q = q[..., 0, :]
       attn_ret = jax.vmap(partial(ragged_attention_fwd, **params), in_axes=in_axis, out_axes=1)(
         q, k, v, starts, lengths
@@ -74,7 +74,7 @@ def attention_kernel(
       block_q, block_kv = min(q.shape[-2], 512), min(k.shape[-2], 1024)
       block_sizes = splash_attention_kernel.BlockSizes(block_q=block_q, block_kv=block_kv, block_kv_compute=block_kv)
       attn_fn = splash_attention_kernel.make_splash_mha_single_device(
-        mask=mask, block_sizes=block_sizes, is_mqa=True, interpret=True
+        mask=mask, block_sizes=block_sizes, is_mqa=True, interpret=False
       )
       attn_fn = jax.vmap(jax.vmap(attn_fn, in_axes=(0, 0, 0, None)), in_axes=(0, 0, 0, 0))
       segment_ids = splash_attention_kernel.SegmentIds(q=q_segment_ids, kv=kv_segment_ids)
