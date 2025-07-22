@@ -61,7 +61,7 @@ def attention_kernel(
     if q.shape[-2] == 1:
       # print(f"Decode kernel, {q.shape=}, seq_len {q.shape[-1]}")
       in_axis = (1, 1, 1, None, None)  # for block_kv, block_bs?
-      params = dict(scale=scale, block_kv=128, block_bs=32)
+      params = dict(scale=scale, block_kv=128, block_bs=32, interpret=True)
       q = q[..., 0, :]
       attn_ret = jax.vmap(partial(ragged_attention_fwd, **params), in_axes=in_axis, out_axes=1)(
         q, k, v, starts, lengths

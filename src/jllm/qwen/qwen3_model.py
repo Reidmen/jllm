@@ -18,7 +18,7 @@ from jax import tree_util
 from jax.sharding import PartitionSpec
 from jax.experimental.shard import auto_axes, reshard
 
-from .flash import attention_kernel as flash_attention_kernel
+from jllm.qwen.flash import attention_kernel as flash_attention_kernel
 from typing import Any, Callable, TypeVar
 
 OCDBT_TARGET_SIZE = 1024 * 1024 * 1024
