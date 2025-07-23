@@ -31,6 +31,8 @@ def attention_kernel(
   lengths: jax.Array,
   cfg,
 ):
+  # Upcasting to F32 for v2 and v3
+  q, k, v = q.astype(jnp.float32), k.astype(jnp.float32), v.astype(jnp.float32) 
   """Flash (GQ)-Attention kernel."""
   if q.shape[-3] % k.shape[-3] != 0:  # Required for GQA
     raise Exception
