@@ -19,6 +19,8 @@ def logical_to_physical(logical, rules) -> PartitionSpec:
     raise ValueError("Duplicate axes in sharding rules")
   return PartitionSpec(*spec)
 
+def attn_device_precision():
+  return jax.devices()[0].device_kind.lower() in ["tpu v2", "tpu v3"]
 
 def attention_kernel(
   q: jax.Array,  # (batch_size, qnum_heads, qseq_len, head_dim)
@@ -31,8 +33,8 @@ def attention_kernel(
   lengths: jax.Array,
   cfg,
 ):
-  # Upcasting to F32 for v2 and v3
-  q, k, v = q.astype(jnp.float32), k.astype(jnp.float32), v.astype(jnp.float32) 
+  if attn_device_precision(): # TPU v2/v3 need f32
+    q, k, v = q.astype(jnp.float32), k.astype(jnp.float32), v.astype(jnp.float32) 
   """Flash (GQ)-Attention kernel."""
   if q.shape[-3] % k.shape[-3] != 0:  # Required for GQA
     raise Exception
