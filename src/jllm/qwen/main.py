@@ -42,6 +42,7 @@ def main(path: str | Path, is_test: str | bool, use_flash_attention: str | bool,
   ]
   if isinstance(user_text, str):
     prompts.append(f"Provide an answer to this: {user_text}")
+  print(f"You are running (experimental) jLLM - Flash attention {use_flash_attention}\n")
   for i, prompt_i in enumerate(prompts):
     print(f"[Prompt] ({i}) {prompt_i}\n")
 
