@@ -293,7 +293,7 @@ def ragged_attention_fwd_reference(
 def test_ragged_attention(interpret: bool = False):
   bs, q_heads, kv_heads, kv_seq_len, head_dim = 64, 8, 4, 1024, 128
   print("Testing ragged flash attention")
-  dtype = jnp.bfloat16
+  dtype = jnp.bfloat16 # bf16 only in v4 or modern
   mesh = jax.make_mesh((jax.device_count(),), axis_names=("x",), devices=jax.devices())
 
   @partial(jax.jit, static_argnames=("which", "block_kv", "block_bs"))
