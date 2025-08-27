@@ -222,7 +222,7 @@ def ragged_attention_fwd(
     first_start_i, next_start_i = start // block_kv, start_next // block_kv
     b = jnp.where(seq_done & (~last_batch), b + 1, b)
     i = jnp.where(seq_done, jnp.where(last_batch, i, next_start_i), jnp.maximum(first_start_i, i))
-    i = jnp.where(last_batch & seq_done, pl.cdiv(length, block_kv) - 1, i)
+    i = jnp.where(last_batch & seq_done, pl.cdiv(length, block_kv) - 1, i) # type: ignore
     return b, i, 0
 
   def kv_scale_prefetch_map(b, i, starts_ref, lengths_ref, chunked_starts_ref, chunked_lengths_ref):
