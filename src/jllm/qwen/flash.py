@@ -1,4 +1,5 @@
 import math
+import time
 import jax
 import jax.numpy as jnp
 from jax.sharding import PartitionSpec
@@ -285,7 +286,7 @@ def ragged_attention_fwd_reference(
   indices = jnp.arange(kv_seq_len)  # [0, 1, ... kv_seq_len]
   mask = (indices >= starts[:, None]) & (indices < lenghts[:, None])
   qk = jnp.where(mask[:, None, :], qk, jnp.finfo(qk.dtype).min)
-  sm = jax.nn.softmax(qk, axis=-1) * (jnp.sum(mask, -1) > 0)[:, None, None]
+  sm = jax.nn.softmax(qk, axis=-1) * (jnp.sum(mask, axis=-1) > 0)[:, None, None]
   return jnp.einsum("bqt,bth->bqh", sm, v)
 
 
@@ -304,25 +305,26 @@ def test_ragged_attention(interpret: bool = False):
     lengths: jax.Array,
     qk_prev: jax.Array | None = None,
     which: str = "pallas",
-    block_kv: int = 124,
+    block_kv: int = 128,
     block_bs: int = 8,
-  ):
+  ) -> jax.Array:
     kv_heads = k.shape[1]
     q_grouped = q.reshape(q.shape[:1] + (kv_heads, -1) + q.shape[2:])
+    qk_prev_grouped = None
     if qk_prev is not None:
-      qk_prev_grouped = qk_prev.reshape(qk_prev[:1] + (kv_heads, -1) + qk_prev[2:])
+      qk_prev_grouped = qk_prev.reshape(qk_prev.shape[:1] + (kv_heads, -1) + qk_prev.shape[2:])
 
     qkv_spec = PartitionSpec(None, "x", None, None)
     in_specs = 3 * (qkv_spec,) + 2 * (PartitionSpec(),)
     in_specs += (PartitionSpec(None, "x", None, None) if qk_prev is not None else None,)
     out_specs = qkv_spec
 
-    @partial(shard_map, mesh=mesh, in_specs=in_specs, out_specs=out_specs)
+    @partial(shard_map, mesh=mesh, in_specs=in_specs, out_specs=out_specs, check_rep=False)
     def _fn(q, k, v, starts, lenghts, qk_prev):
       in_axes = (1, 1, 1, None, None)
       in_axes += (1 if qk_prev is not None else None,)
       if which == "pallas":
-        opts = dict(block_kv=block_kv, block_bs=block_bs)
+        opts = dict(block_kv=block_kv, block_bs=block_bs, interpret=interpret)
         return jax.vmap(
           partial(ragged_attention_fwd, **opts), in_axes=in_axes, out_axes=1
         )(q, k, v, starts, lenghts, qk_prev)
@@ -360,10 +362,34 @@ def test_ragged_attention(interpret: bool = False):
   print(f"Sparse total memory {total_mem:.5e}")
   print(f"Sparse HBM speed {1e6 * total_mem / 819e9:.5e} us")
 
-  attention_pallas = attention_test(q, k, v, starts, lengths, qk_prev, which="pallas")
+  print(f"Doing analysis for {q.shape=}")
   attention_reference = attention_test(q, k, v, starts, lengths, qk_prev, which="naive") 
+  attention_pallas = attention_test(q, k, v, starts, lengths, qk_prev, which="pallas")
+  print(f"Computing relative errors over {q.shape[-1]=}")
   error = jnp.linalg.norm((attention_pallas - attention_reference).astype(jnp.float32), axis=-1)
   error = error / jnp.linalg.norm(attention_reference.astype(jnp.float32), axis=-1)
-  print(f"Average error: {error}")
+  print(f"Average error (per bs): {jnp.mean(error, axis=-1)}")
+
+  # (QK^T) 2 * head_dim * length + (AV) 2 * head_dim * length
+  total_flops = bs * q_heads * 4 * head_dim * jnp.mean(lengths)
+  tflops = total_flops / 1e12
+  print(f"Total FLOPTs for the operation (approx) {total_flops}, i.e. {tflops} TFLOPs")
+  start_time = time.time()
+  attention_reference = attention_test(q, k, v, starts, lengths, qk_prev, which="naive") 
+  attention_reference.block_until_ready()
+  end_time = time.time()
+  elapsed_time = end_time - start_time
+  print(f"Naive implementation took: {elapsed_time:.6f} s")
+  print(f"Naive implementation TFLOPs/s {tflops / elapsed_time:.6f}")
+
+  start_time = time.time()
+  attention_reference = attention_test(q, k, v, starts, lengths, qk_prev, which="pallas") 
+  attention_reference.block_until_ready()
+  end_time = time.time()
+  elapsed_time = end_time - start_time
+  print(f"Flash atttention (pallas) took: {elapsed_time:.6f} s")
+  print(f"Flas attention (pallas) TFLOPs/s {tflops / elapsed_time:.6f}")
 
 
+if __name__ == "__main__":
+  test_ragged_attention(interpret=True)
